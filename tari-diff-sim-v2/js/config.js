@@ -1,0 +1,121 @@
+'use strict';
+
+/**
+ * Configuration constants for the Tari difficulty simulation.
+ * Algorithm-specific constants (ALGO_CONFIG, target times, etc.) live in lwma.js.
+ * Wrapped in IIFE to avoid polluting the global scope with top-level const declarations.
+ */
+
+(function() {
+
+// --- Simulation parameters ---
+
+const HASH_RATE_WINDOW = 20;
+const NUMBER_OF_RUNS = 10;
+const RATE_PRECISION = 1000000000n;
+const PENALTY_BASE = 2n;
+const LOG_EPSILON = 1e-10;
+const FALLBACK_BLOCK_TIME = 120;
+const PERCENT_SCALING = 10000n;
+const PERCENT_FACTOR = 100;
+
+// --- Scenario generation ---
+
+const DEFAULT_MIN_WINDOW = 30;
+const DEFAULT_MAX_WINDOW = 60;
+const DEFAULT_STEP = 5;
+const MIN_STEP = 1;
+const BASELINE_WINDOW = 90;
+
+const SCENARIO_PALETTE = [
+    '#1abc9c', '#3498db', '#9b59b6', '#e74c3c', '#e67e22',
+    '#2ecc71', '#f1c40f', '#ff6b6b', '#4ecdc4', '#ffe66d',
+];
+const BASELINE_COLOR = '#95a5a6';
+
+// --- Block height range (analysis window) ---
+
+const ANALYSIS_START_HEIGHT = 295000;
+const ANALYSIS_END_HEIGHT = 296521;
+const ZOOM_STEP = 10;
+const MIN_ZOOM_DELTA = 10;
+
+// --- Statistics ---
+
+const Z_SCORE_95_PERCENT = 1.96;
+const MEDIAN_PERCENTILE = 0.5;
+const P90_PERCENTILE = 0.9;
+const P99_PERCENTILE = 0.99;
+
+// --- Validation thresholds ---
+
+const VALIDATION_MATCH_THRESHOLD = 99.9;
+const VALIDATION_MAX_ERROR = 0.01;
+
+// --- Time formatting ---
+
+const SECONDS_PER_MINUTE = 60;
+const SECONDS_PER_HOUR = 3600;
+
+// --- Difficulty formatting thresholds ---
+
+const PETA_THRESHOLD = 1e15;
+const TERA_THRESHOLD = 1e12;
+const GIGA_THRESHOLD = 1e9;
+const MEGA_THRESHOLD = 1e6;
+const KILO_THRESHOLD = 1e3;
+
+// --- Chart styling ---
+
+const CHART_BORDER_WIDTH = 1.2;
+const CHART_COMPARE_BORDER_WIDTH = 1.5;
+const CHART_TENSION = 0.15;
+const CHART_BASELINE_TENSION = 0.2;
+const CHART_DIFFICULTY_TENSION = 0.1;
+const POINT_RADIUS_HIDDEN = 0;
+const POINT_HOVER_RADIUS = 4;
+
+const DOWNSAMPLE_BASELINE = 300;
+const DOWNSAMPLE_COMPARISON = 600;
+const DOWNSAMPLE_DIFFICULTY = 400;
+const DOWNSAMPLE_TRIAL = 400;
+
+const TRIAL_CHART_HEIGHT = 170;
+const TRIAL_BORDER_WIDTH = 1;
+const TRIAL_TENSION = 0.15;
+
+const MAX_LABEL_LENGTH = 20;
+const TRUNCATED_LABEL_LENGTH = 18;
+const MAX_TICK_ROTATION = 30;
+const MAX_TICKS = 12;
+const MAX_CONSECUTIVE_DISPLAY = 10;
+
+const PENALTY_POINT_RADIUS = 3;
+const PENALTY_HOVER_RADIUS = 6;
+
+const INIT_DELAY_MS = 50;
+
+const ALGO_IDS = [0, 1, 2, 3];
+
+if (typeof window !== 'undefined') {
+    window.CONFIG = {
+        HASH_RATE_WINDOW, NUMBER_OF_RUNS, RATE_PRECISION, PENALTY_BASE,
+        LOG_EPSILON, FALLBACK_BLOCK_TIME, PERCENT_SCALING, PERCENT_FACTOR,
+        DEFAULT_MIN_WINDOW, DEFAULT_MAX_WINDOW, DEFAULT_STEP, MIN_STEP, BASELINE_WINDOW,
+        SCENARIO_PALETTE, BASELINE_COLOR,
+        ANALYSIS_START_HEIGHT, ANALYSIS_END_HEIGHT, ZOOM_STEP, MIN_ZOOM_DELTA,
+        Z_SCORE_95_PERCENT, MEDIAN_PERCENTILE, P90_PERCENTILE, P99_PERCENTILE,
+        VALIDATION_MATCH_THRESHOLD, VALIDATION_MAX_ERROR,
+        SECONDS_PER_MINUTE, SECONDS_PER_HOUR,
+        PETA_THRESHOLD, TERA_THRESHOLD, GIGA_THRESHOLD, MEGA_THRESHOLD, KILO_THRESHOLD,
+        CHART_BORDER_WIDTH, CHART_COMPARE_BORDER_WIDTH, CHART_TENSION,
+        CHART_BASELINE_TENSION, CHART_DIFFICULTY_TENSION,
+        POINT_RADIUS_HIDDEN, POINT_HOVER_RADIUS,
+        DOWNSAMPLE_BASELINE, DOWNSAMPLE_COMPARISON, DOWNSAMPLE_DIFFICULTY, DOWNSAMPLE_TRIAL,
+        TRIAL_CHART_HEIGHT, TRIAL_BORDER_WIDTH, TRIAL_TENSION,
+        MAX_LABEL_LENGTH, TRUNCATED_LABEL_LENGTH, MAX_TICK_ROTATION, MAX_TICKS,
+        MAX_CONSECUTIVE_DISPLAY, PENALTY_POINT_RADIUS, PENALTY_HOVER_RADIUS,
+        INIT_DELAY_MS, ALGO_IDS,
+    };
+}
+})();
