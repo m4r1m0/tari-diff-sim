@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tari Difficulty Algorithm Simulation</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="lib/chart.min.js"></script>
+</head>
+<body>
+    <div class="header">
+        <h1>Tari Difficulty Algorithm Simulation</h1>
+        <p class="subtitle">
+            Mining competition simulation: LWMA + TIP-004 penalty
+            &mdash; Block range 295000&ndash;296521 &mdash; 30 runs per scenario (95% CI)
+        </p>
+    </div>
+
+    <div class="settings-bar">
+        <label>Min Window: <input type="number" id="minWindow" value="30" min="10" max="90"></label>
+        <label>Max Window: <input type="number" id="maxWindow" value="60" min="10" max="120"></label>
+        <label>Step: <input type="number" id="stepWindow" value="5" min="1" max="30"></label>
+        <button id="runSimulations" class="run-btn">Run Simulations</button>
+        <button id="rerandomize" class="run-btn rerandomize-btn">Re-randomize Seeds</button>
+    </div>
+
+    <div id="loading" class="loading-overlay">
+        <div class="spinner"></div>
+        <p id="loadingText">Running simulations...</p>
+    </div>
+
+    <div class="tab-bar">
+        <button class="tab-button active" data-tab="tab-baseline">Baseline</button>
+        <button class="tab-button" data-tab="tab-blocktime">Block Time Comparison</button>
+        <button class="tab-button" data-tab="tab-difficulty">Difficulty Comparison</button>
+        <button class="tab-button" data-tab="tab-lanesplit">Algo / Lane Split</button>
+        <button class="tab-button" data-tab="tab-summary">Summary Stats</button>
+        <button class="tab-button" data-tab="tab-validation">Validation</button>
+    </div>
+
+    <div id="tab-baseline" class="tab-content active">
+        <div class="info-bar">Actual historical data from the Tari mainnet node (via gRPC). Block range 295000&ndash;296521. Target block time: 120s (2 min).</div>
+        <div class="zoom-bar">
+            <span>Zoom:</span>
+            <input type="range" class="zoom-min" min="295000" max="296521" value="295000" step="10">
+            <span class="zoom-val zoom-min-val">295000</span>
+            <span>&mdash;</span>
+            <input type="range" class="zoom-max" min="295000" max="296521" value="296521" step="10">
+            <span class="zoom-val zoom-max-val">296521</span>
+            <button class="zoom-reset">Reset</button>
+        </div>
+        <div class="chart-container"><canvas id="chartBaselineBTOverall"></canvas></div>
+        <div class="chart-container"><canvas id="chartBaselineBTByAlgo"></canvas></div>
+        <div class="chart-container"><canvas id="chartBaselineDifficulty"></canvas></div>
+    </div>
+
+    <div id="tab-blocktime" class="tab-content">
+        <div class="info-bar">Simulated main chain block times vs actual. Block time chart shows the median run (the run closest to the median mean block time). Toggle scenarios to compare.</div>
+        <div class="zoom-bar">
+            <span>Zoom:</span>
+            <input type="range" class="zoom-min" min="295000" max="296521" value="295000" step="10">
+            <span class="zoom-val zoom-min-val">295000</span>
+            <span>&mdash;</span>
+            <input type="range" class="zoom-max" min="295000" max="296521" value="296521" step="10">
+            <span class="zoom-val zoom-max-val">296521</span>
+            <button class="zoom-reset">Reset</button>
+        </div>
+        <div class="scenario-bar" id="scenarioCheckboxes"></div>
+        <div class="chart-container large"><canvas id="chartBlockTimeCompare"></canvas></div>
+        <details class="trial-section" id="trialBlockTime">
+            <summary>Show Individual Trial Runs (30 per scenario)</summary>
+            <div class="trial-controls">
+                <label>Scenario: <select class="trial-scenario-select" id="trialSelectBlockTime"></select></label>
+            </div>
+            <div class="trial-grid" id="trialGridBlockTime"></div>
+        </details>
+    </div>
+
+    <div id="tab-difficulty" class="tab-content">
+        <div class="info-bar">Simulated difficulty trajectories vs actual, per PoW algorithm (median run).</div>
+        <div class="zoom-bar">
+            <span>Zoom:</span>
+            <input type="range" class="zoom-min" min="295000" max="296521" value="295000" step="10">
+            <span class="zoom-val zoom-min-val">295000</span>
+            <span>&mdash;</span>
+            <input type="range" class="zoom-max" min="295000" max="296521" value="296521" step="10">
+            <span class="zoom-val zoom-max-val">296521</span>
+            <button class="zoom-reset">Reset</button>
+        </div>
+        <div class="scenario-bar" id="scenarioCheckboxesDiff"></div>
+        <div class="control-bar">
+            <label>Algorithm:
+                <select id="algoSelector">
+                    <option value="0">RandomXM</option>
+                    <option value="1">Sha3x</option>
+                    <option value="2">RandomXT</option>
+                    <option value="3">Cuckaroo</option>
+                </select>
+            </label>
+        </div>
+        <div class="chart-container large"><canvas id="chartDifficultyCompare"></canvas></div>
+        <details class="trial-section" id="trialDifficulty">
+            <summary>Show Individual Trial Runs (30 per scenario)</summary>
+            <div class="trial-controls">
+                <label>Scenario: <select class="trial-scenario-select" id="trialSelectDifficulty"></select></label>
+            </div>
+            <div class="trial-grid" id="trialGridDifficulty"></div>
+        </details>
+    </div>
+
+    <div id="tab-lanesplit" class="tab-content">
+        <div class="info-bar">Block distribution across PoW algorithms and consecutive block run analysis. With the mining competition model, the penalty makes consecutive same-algo blocks unlikely (another algo wins instead).</div>
+        <div class="chart-container"><canvas id="chartAlgoDistribution"></canvas></div>
+        <div class="chart-grid">
+            <div class="chart-container"><canvas id="chartConsecutiveRuns"></canvas></div>
+            <div class="chart-container"><canvas id="chartPenaltyMultiplier"></canvas></div>
+        </div>
+    </div>
+
+    <div id="tab-summary" class="tab-content">
+        <div class="info-bar">Per-scenario statistics (blocks 295000&ndash;296521). Values show mean &plusmn; 95% CI across 30 runs. CV = Coefficient of Variation (std/mean).</div>
+        <div class="table-container">
+            <table class="stats-table" id="summaryTable">
+                <thead><tr>
+                    <th>Scenario</th><th>Blocks</th><th>Mean BT</th><th>Median BT</th>
+                    <th>Std Dev</th><th>CV</th><th>P90</th><th>P99</th><th>Max BT</th>
+                    <th>Algo Split</th>
+                </tr></thead>
+                <tbody id="summaryTableBody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="tab-validation" class="tab-content">
+        <div class="info-bar">LWMA-90 replay validation: replays actual block timestamps through the JS LWMA engine and compares computed difficulties to actual network difficulties. Target: >99.9% exact match, <0.01% max relative error.</div>
+        <div id="validationPanel"></div>
+    </div>
+
+    <div class="footer">
+        <p>Data extracted via gRPC from local Tari node. LWMA verified against <code>lwma_diff.rs</code> (Tari Rust source). Mining competition: all 4 algos race in parallel, winner sampled from P(i) = (hashRate_i / targetDiff_i) / &Sigma;(hashRate_j / targetDiff_j). PRNG: xoshiro128**.</p>
+        <p>Algorithms: RandomXM (0), Sha3x (1), RandomXT (2), Cuckaroo (3). Target time: 480s/algo (2 min overall). Just download and open index.html &mdash; no server needed.</p>
+    </div>
+
+    <script src="js/config.js"></script>
+    <script src="js/lwma.js"></script>
+    <script src="js/prng.js"></script>
+    <script src="js/statistics.js"></script>
+    <script src="js/simulation.js"></script>
+    <script src="js/validation.js"></script>
+    <script src="js/charts.js"></script>
+    <script src="js/data.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
