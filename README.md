@@ -28,6 +28,8 @@ Block data was extracted from a local Tari mainnet node (Tari Universe) via gRPC
   - Blocks 294,400–294,999: **warm-up** (seeds LWMA windows and hash rate estimates)
   - Blocks 295,000–296,521: **analysis range** (1,522 blocks, ~3.5 days)
 - **Fields kept per block:** `height`, `timestamp`, `pow_algo`, `difficulty`
+- **Stripped fields:** `grpc_address`, `extraction_time`, `tip_height`, `algo_name`, and all per-algo hash rate estimates (`sha3x_hr`, `randomxm_hr`, `randomxt_hr`, `cuckaroo_hr`) — not used by the simulation (hash rates are estimated from actual solve times instead)
+- **No identifying information** is included — only block heights, timestamps, PoW algorithm, and target difficulty
 
 ---
 
@@ -186,9 +188,9 @@ This preserves sufficient precision for the categorical and exponential sampling
 
 Random numbers are generated using **xoshiro128\*\*** (xoshiro128 star-star), a fast 32-bit PRNG with good statistical properties.
 
-By default, each simulation run uses a fixed seed (1–10), ensuring **reproducible results** — anyone who downloads the files gets the exact same 10 runs, CIs, and charts. This is critical for auditing and sharing.
+By default, each simulation run uses a fixed seed (1–30), ensuring **reproducible results** — anyone who downloads the files gets the exact same 30 runs, CIs, and charts. This is critical for auditing and sharing.
 
-A **"Re-randomize Seeds"** button is provided in the settings bar. Clicking it generates a random `baseSeed` (0–999,999) and re-runs all simulations with seeds `baseSeed+1` through `baseSeed+10`, producing a fresh set of results while keeping the same window range.
+A **"Re-randomize Seeds"** button is provided in the settings bar. Clicking it generates a random `baseSeed` (0–999,999) and re-runs all simulations with seeds `baseSeed+1` through `baseSeed+30`, producing a fresh set of results while keeping the same window range.
 
 ---
 
@@ -197,7 +199,7 @@ A **"Re-randomize Seeds"** button is provided in the settings bar. Clicking it g
 | Parameter            | Value  | Description                                                      |
 |----------------------|--------|------------------------------------------------------------------|
 | `WARMUP_BLOCKS`      | 600    | Blocks used to seed LWMA windows and hash rate estimates         |
-| `NUMBER_OF_RUNS`    | 10     | Independent simulation runs per scenario (for confidence intervals) |
+| `NUMBER_OF_RUNS`    | 30     | Independent simulation runs per scenario (for confidence intervals) |
 | `HASH_RATE_WINDOW`  | 20     | Rolling window size for hash rate estimation (blocks per algo)   |
 | `RATE_PRECISION`     | 10^9   | BigInt precision multiplier for rate computation                 |
 | `PENALTY_BASE`       | 2n     | Exponential backoff base for TIP-004 penalty (2^n)              |
@@ -273,7 +275,7 @@ For each simulation run, the following statistics are computed:
 
 ### Aggregation across runs
 
-Each statistic is aggregated across 10 runs:
+Each statistic is aggregated across 30 runs:
 
 - **Mean** — average across runs
 - **CI** — 95% confidence interval: `mean ± 1.96 × std / √n`
@@ -281,9 +283,9 @@ Each statistic is aggregated across 10 runs:
 
 ### Charts
 
-- **Block time comparison chart** shows the **mean across all 10 runs** at each block height (averaging block times across runs for a smoother, more representative line)
-- **Difficulty comparison chart** shows the **median run** (averaging difficulties across runs with different algo winners doesn't make sense — different algos have different difficulty scales)
-- **Individual trial charts** (collapsible) show all 10 runs as separate small line charts, with the median run highlighted
+- **Block time comparison chart** shows the **median run** (the run closest to the median mean block time — averaging across runs collapses the exponential noise to a flat line around the target, hiding the actual block-time variation patterns)
+- **Difficulty comparison chart** also shows the **median run** (different algos have different difficulty scales, so averaging across runs with different winners is meaningless)
+- **Individual trial charts** (collapsible) show all 30 runs as separate small line charts, with the median run highlighted
 - **Summary table** shows mean ± CI for each statistic
 
 ---
@@ -302,4 +304,4 @@ Each statistic is aggregated across 10 runs:
 
 6. **Per-algo hash rate units** — hash rates for different algorithms are in different units (e.g., Sha3x hashes vs Cuckaroo cycles). The rate computation (`hashRate / targetDiff`) normalizes these to "blocks per second," which is consistent across algos.
 
-7. **Stochastic results** — each run produces different results due to random sampling. The 10-run aggregation with CIs provides statistical confidence, but individual runs may vary. Default seeds (1–10) ensure reproducibility; use the Re-randomize button for fresh runs.
+7. **Stochastic results** — each run produces different results due to random sampling. The 30-run aggregation with CIs provides statistical confidence, but individual runs may vary. Default seeds (1–30) ensure reproducibility; use the Re-randomize button for fresh runs.
