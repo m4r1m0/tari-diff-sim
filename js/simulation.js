@@ -14,7 +14,8 @@
  */
 
 const { NUMBER_OF_RUNS, RATE_PRECISION, PENALTY_BASE, LOG_EPSILON, FALLBACK_BLOCK_TIME,
-        BASELINE_WINDOW, SCENARIO_PALETTE, BASELINE_COLOR, ALGO_IDS } = CONFIG;
+        BASELINE_WINDOW, SCENARIO_PALETTE, BASELINE_COLOR, ALGO_IDS,
+        PENALTY_CAP, PENALTY_CLASS_MAP } = CONFIG;
 
 const { aggregateStatsWithCI, computeStats, findMedianRun } = Statistics;
 
@@ -27,13 +28,28 @@ function generateScenarios(minWindow, maxWindow, step) {
     ];
     let colorIndex = 0;
     for (let windowSize = minWindow; windowSize <= maxWindow; windowSize += step) {
+        // Original proposal: per-algo consecutive count, uncapped 2^n, sticky
+        // (penalty baked into target_time, so inflated difficulty lingers in the window).
         scenarios.push({
             id: `lwma${windowSize}p`,
-            label: `LWMA-${windowSize} + Penalty`,
+            label: `LWMA-${windowSize} + Penalty (Original)`,
             window: windowSize,
             penalty: true,
+            penaltyMode: 'original',
             baseline: false,
             color: SCENARIO_PALETTE[colorIndex % SCENARIO_PALETTE.length],
+        });
+        // New proposal (RFC PR #174, 2026-07-28): penalty classes (RxM+RxT grouped),
+        // capped at 32x, transient (window stores unadjusted difficulty + normalized
+        // solve times, so the penalty resets the instant a different class mines).
+        scenarios.push({
+            id: `lwma${windowSize}pnew`,
+            label: `LWMA-${windowSize} + Penalty (New)`,
+            window: windowSize,
+            penalty: true,
+            penaltyMode: 'new',
+            baseline: false,
+            color: SCENARIO_PALETTE[(colorIndex + 8) % SCENARIO_PALETTE.length],
         });
         colorIndex++;
     }
@@ -271,6 +287,146 @@ function buildResultObject(block, winningAlgo, simulatedDifficulty, simulatedSol
 }
 
 
+// --- "New" proposal (RFC PR #174, 2026-07-28) competition path ---
+//
+// Isolated from the Original path above so the validated Original behaviour is
+// unchanged. Reuses the shared helpers (estimateMiningRate, sampleWinningAlgo,
+// sampleBlockTime, updateHashRateHistory, buildResultObject).
+//
+// Differences from the Original penalty:
+//   * Consecutive counting is per PENALTY CLASS, not per algorithm. RxM and RxT
+//     share the 'randomx' class, so RxM -> RxT continues the run and incurs the
+//     penalty (they are mined by the same hardware).
+//   * The modifier is capped: m = min(2^consecutive, PENALTY_CAP) with PENALTY_CAP=32.
+//   * The penalty is TRANSIENT: the LWMA (LwmaWindowSW) returns the UNADJUSTED
+//     target using base target_time and solve times normalized by m[i]. The mining
+//     target is unadjusted * m; the window stores the UNADJUSTED difficulty + m, so
+//     the penalty does not linger in avg_difficulty and resets immediately when a
+//     different class mines.
+//   * simDifficulty records the ADJUSTED mining target (parity with the Original,
+//     whose stored difficulty is also the penalized target), so the difficulty
+//     charts compare like-for-like.
+
+function runSingleScenarioSW(blocks, scenario, baseSeed = 0) {
+    const runs = [];
+    const allStats = [];
+    for (let runIndex = 0; runIndex < NUMBER_OF_RUNS; runIndex++) {
+        const run = runCompetitionSW(blocks, scenario, runIndex + 1 + baseSeed);
+        runs.push(run);
+        allStats.push(computeStats(run));
+    }
+    return {
+        runs,
+        stats: aggregateStatsWithCI(allStats),
+        medianRunIndex: findMedianRun(allStats),
+        numRuns: NUMBER_OF_RUNS,
+    };
+}
+
+function runCompetitionSW(blocks, scenario, seed) {
+    const rng = createRng(seed);
+    const windows = initializeLwmaWindowsSW(scenario);
+    const hashRateHistory = createEmptyHashRateHistory();
+
+    let lastClass = null;
+    let consecutiveClassCount = 0;
+    let simulatedTimestamp = 0;
+    const results = [];
+
+    for (let index = 0; index < blocks.length; index++) {
+        const block = blocks[index];
+        const actualAlgo = block.pow_algo;
+
+        updateHashRateHistory(hashRateHistory, block, actualAlgo);
+
+        if (index < WARMUP_BLOCKS) {
+            windows[actualAlgo].add(block.timestamp, block.difficulty, 1n);
+            if (index === WARMUP_BLOCKS - 1) simulatedTimestamp = block.timestamp;
+            continue;
+        }
+
+        const algoRates = computeAlgoRatesSW(windows, hashRateHistory, lastClass, consecutiveClassCount);
+        const totalRate = algoRates.reduce((sum, entry) => sum + entry.rate, 0);
+
+        let winningAlgo, simulatedDifficulty, simulatedSolveTime, winnerModifier, winnerUnadjusted;
+
+        if (totalRate <= 0) {
+            winningAlgo = actualAlgo;
+            simulatedDifficulty = BigInt(block.difficulty);
+            simulatedSolveTime = block._mainChainBlockTime || FALLBACK_BLOCK_TIME;
+            winnerModifier = 1n;
+            winnerUnadjusted = BigInt(block.difficulty);
+        } else {
+            winningAlgo = sampleWinningAlgo(algoRates, totalRate, rng);
+            simulatedSolveTime = sampleBlockTime(totalRate, rng);
+            const winnerEntry = algoRates.find(entry => entry.algo === winningAlgo);
+            winnerModifier = winnerEntry.modifier;
+            winnerUnadjusted = winnerEntry.unadjusted;
+            simulatedDifficulty = winnerEntry.miningTarget; // adjusted, for display parity
+        }
+
+        // Update the class-based run length AFTER sampling this block.
+        const winnerClass = PENALTY_CLASS_MAP[winningAlgo];
+        if (winnerClass === lastClass) consecutiveClassCount++;
+        else consecutiveClassCount = 0;
+        lastClass = winnerClass;
+
+        simulatedTimestamp += simulatedSolveTime;
+        // Store the UNADJUSTED difficulty + the modifier in force for this block, so
+        // the LWMA stays clean and the penalty stays transient.
+        windows[winningAlgo].add(Math.floor(simulatedTimestamp), winnerUnadjusted, winnerModifier);
+
+        const result = buildResultObject(
+            block, winningAlgo, simulatedDifficulty, simulatedSolveTime,
+            Math.floor(simulatedTimestamp), consecutiveClassCount, scenario.window, scenario.penalty
+        );
+        // Override with the capped modifier (buildResultObject would compute 2^n uncapped).
+        result.penaltyMultiplier = winnerModifier > 1n ? Number(winnerModifier) : 1;
+        results.push(result);
+    }
+
+    return results;
+}
+
+function initializeLwmaWindowsSW(scenario) {
+    const windows = {};
+    for (const algoId of ALGO_IDS) {
+        const algoConfig = ALGO_CONFIG[algoId];
+        const window = new LwmaWindowSW(scenario.window, algoConfig.targetTime, algoConfig.minDifficulty, MAX_DIFFICULTY);
+        window.setBaseTargetTime(algoConfig.targetTime);
+        windows[algoId] = window;
+    }
+    return windows;
+}
+
+function computeAlgoRatesSW(windows, hashRateHistory, lastClass, consecutiveClassCount) {
+    const algoRates = [];
+    for (const algoId of ALGO_IDS) {
+        const window = windows[algoId];
+
+        // Penalty applies to every algo in the leading penalty class (so an RxT block
+        // following an RxM block continues the RandomX run and pays the penalty).
+        const algoClass = PENALTY_CLASS_MAP[algoId];
+        const consecutive = (algoClass === lastClass) ? consecutiveClassCount : 0;
+
+        let modifier = 1n;
+        if (consecutive > 0) {
+            modifier = PENALTY_BASE ** BigInt(consecutive);
+            if (modifier > PENALTY_CAP) modifier = PENALTY_CAP; // m = min(2^consecutive, 32)
+        }
+
+        let unadjusted = window.calculate();
+        if (unadjusted === null) unadjusted = ALGO_CONFIG[algoId].minDifficulty;
+
+        const miningTarget = unadjusted * modifier; // adjusted target the block must meet
+        const rate = estimateMiningRate(hashRateHistory[algoId], miningTarget);
+
+        algoRates.push({ algo: algoId, unadjusted, miningTarget, modifier, rate });
+    }
+    return algoRates;
+}
+
+
 // --- Run all scenarios ---
 
 function runAll(blocks, scenarios) {
@@ -303,6 +459,12 @@ function runSingleScenario(blocks, scenario, baseSeed = 0) {
             medianRunIndex: 0,
             numRuns: 1,
         };
+    }
+
+    // "New" proposal uses a separate competition path; the Original path below is
+    // left untouched.
+    if (scenario.penaltyMode === 'new') {
+        return runSingleScenarioSW(blocks, scenario, baseSeed);
     }
 
     const runs = [];

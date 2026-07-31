@@ -19,6 +19,13 @@ const FALLBACK_BLOCK_TIME = 120;
 const PERCENT_SCALING = 10000n;
 const PERCENT_FACTOR = 100;
 
+// --- "New" penalty proposal (RFC PR #174, 2026-07-28) ---
+// Penalty classes: RxM and RxT share RandomX hardware, so a run alternates RxM/RxT
+// without resetting the backoff. Capped at 32x for liveness (reached at the 6th
+// consecutive class block).
+const PENALTY_CAP = 32n;
+const PENALTY_CLASS_MAP = { 0: 'randomx', 2: 'randomx', 1: 'sha3x', 3: 'c29' };
+
 // --- Scenario generation ---
 
 const DEFAULT_MIN_WINDOW = 30;
@@ -30,6 +37,7 @@ const BASELINE_WINDOW = 90;
 const SCENARIO_PALETTE = [
     '#1abc9c', '#3498db', '#9b59b6', '#e74c3c', '#e67e22',
     '#2ecc71', '#f1c40f', '#ff6b6b', '#4ecdc4', '#ffe66d',
+    '#a29bfe', '#fd79a8', '#00cec9', '#fab1a0', '#74b9ff', '#55efc4',
 ];
 const BASELINE_COLOR = '#95a5a6';
 
@@ -101,6 +109,7 @@ if (typeof window !== 'undefined') {
     window.CONFIG = {
         HASH_RATE_WINDOW, NUMBER_OF_RUNS, RATE_PRECISION, PENALTY_BASE,
         LOG_EPSILON, FALLBACK_BLOCK_TIME, PERCENT_SCALING, PERCENT_FACTOR,
+        PENALTY_CAP, PENALTY_CLASS_MAP,
         DEFAULT_MIN_WINDOW, DEFAULT_MAX_WINDOW, DEFAULT_STEP, MIN_STEP, BASELINE_WINDOW,
         SCENARIO_PALETTE, BASELINE_COLOR,
         ANALYSIS_START_HEIGHT, ANALYSIS_END_HEIGHT, ZOOM_STEP, MIN_ZOOM_DELTA,

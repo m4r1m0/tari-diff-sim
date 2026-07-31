@@ -1,6 +1,6 @@
 # Tari Difficulty Algorithm Simulation
 
-A client-side web application that simulates how Tari's difficulty adjustment algorithm (LWMA) with the proposed TIP-004 consecutive block penalty would have performed under real network conditions. Uses actual historical block data extracted from a Tari mainnet node via gRPC.
+A client-side web application that simulates how Tari's difficulty adjustment algorithm (LWMA) with the proposed TIP-004 consecutive block penalty would have performed under real network conditions. It compares **two penalty proposals side by side**: the **Original** penalty (per-algo, uncapped) and the **New** revised proposal from [RFC PR #174](https://github.com/tari-project/rfcs/pull/174) (penalty classes, capped at 32×, transient). Uses actual historical block data extracted from a Tari mainnet node via gRPC.
 
 **No server required.** Download the folder and open `index.html` in any browser. All computation runs client-side in JavaScript.
 
@@ -10,7 +10,7 @@ A client-side web application that simulates how Tari's difficulty adjustment al
 
 1. [Data Source](#data-source)
 2. [LWMA Algorithm](#lwma-algorithm)
-3. [TIP-004 Consecutive Block Penalty](#tip-004-consecutive-block-penalty)
+3. [Penalty Proposals (Original vs New)](#penalty-proposals)
 4. [Mining Competition Model](#mining-competition-model)
 5. [Simulation Parameters](#simulation-parameters)
 6. [Validation](#validation)
@@ -95,21 +95,21 @@ target = (avg_difficulty × n×(n+1)/2 × target_time) / Σ(min(solveTime_i, 6×
 
 ---
 
-## TIP-004 Consecutive Block Penalty
+## Penalty Proposals
 
-**Source:** [RFC PR #174](https://github.com/tari-project/rfcs/pull/174) — `TIP-RFC-MT-0004_MinoTari_PoW_Difficulty_changes.md`
+Both proposals make consecutive same-algo blocks exponentially more expensive to mine. They differ in **how the consecutive run is defined**, **whether the penalty is capped**, and **how the penalty interacts with the LWMA**.
 
-### Mechanism
+### Original Proposal (sticky)
 
-When a PoW algorithm mines a block, and the previous block(s) in the main chain were also mined by the same algorithm, the **target time for that algorithm is doubled** for each consecutive block:
+**Source:** initial TIP-004 formulation.
+
+When a PoW algorithm mines a block, and the previous block(s) in the main chain were also mined by the **same algorithm**, the **target time for that algorithm is doubled** for each consecutive block:
 
 ```
 effective_target_time = base_target_time × 2^consecutive_count
 ```
 
-Where `consecutive_count` = number of immediately preceding blocks in the main chain mined by the same algorithm.
-
-### Example (Sha3x, base target = 8 min)
+Where `consecutive_count` = number of immediately preceding blocks mined by the same algorithm. **No cap.** When a different algorithm mines, the penalty resets.
 
 | Consecutive blocks | Target time | Effect                          |
 |--------------------|-------------|---------------------------------|
@@ -118,15 +118,38 @@ Where `consecutive_count` = number of immediately preceding blocks in the main c
 | 2                  | 32 min      | 4× harder                       |
 | 3                  | 64 min      | 8× harder                       |
 
-When a different algorithm mines a block, the penalty **resets** to the base target time.
+**Sticky interaction with the LWMA:** the penalty is applied by inflating `target_time`, so `LwmaWindow.calculate()` returns an *adjusted* difficulty. That adjusted difficulty is then stored back into the LWMA window. The inflated difficulty therefore lingers in `avg_difficulty` until it ages out — the penalty is "sticky" and decays slowly after a run breaks.
 
-### Effect on difficulty
+### New Proposal — RFC PR #174 revised (transient)
 
-Since `target ∝ target_time` in the LWMA formula, doubling the target time doubles the computed target difficulty. This makes consecutive same-algo blocks exponentially more expensive to mine.
+**Source:** [RFC PR #174](https://github.com/tari-project/rfcs/pull/174) — `TIP-RFC-MT-0004_MinoTari_PoW_Difficulty_changes.md` (Last Modified 2026-07-28). Implemented in `js/lwma_sw.js` (`LwmaWindowSW`) and the `runCompetitionSW` path in `js/simulation.js`.
+
+Three changes versus the Original:
+
+1. **Penalty classes.** RxM and RxT are both RandomX variants mined by the same hardware, so they are grouped into one **penalty class**. A run alternating RxM↔RxT does *not* reset the backoff. Algorithms are grouped: `RandomX = {RxM, RxT}`, `Sha3x = {Sha3x}`, `C29 = {C29}`.
+
+2. **Capped at 32×.** `m = min(2^(r-1), 32)` where `r` is the run length within the class (including the block being mined). The cap is a liveness guarantee: if a single class is ever the only active miner, an uncapped modifier would stall the chain indefinitely. The cap bounds that failure to a 32× slowdown (≈4.3 h/block at an 8 min base) and the chain resumes as soon as any other class mines.
+
+   | Run length `r` | Modifier `m` |
+   |----------------|--------------|
+   | 1              | 1            |
+   | 2              | 2            |
+   | 3              | 4            |
+   | 4              | 8            |
+   | 5              | 16           |
+   | 6+             | 32 (capped)  |
+
+3. **Transient, not sticky.** The LWMA always uses the **base** `target_time` and returns the **unadjusted** target difficulty. Each sample in the window carries the per-block modifier `m[i]`, and solve times are **normalized by `m[i]`** before entering the weighted sum (`solve_time[i] / m[i]`, normalize-then-clamp to the base bounds, integer-exact via `M_MAX = 32`). The mining target is `unadjusted × m`; the window stores the **unadjusted** difficulty + `m`. Because the inflated difficulty never enters `avg_difficulty`, the penalty affects only the block it applies to and **resets the instant a different class mines** — no lingering inflation.
+
+   **Implementation invariant:** with every modifier set to 1, `LwmaWindowSW.calculate()` is numerically identical to `LwmaWindow.calculate()`, so the warm-up phase (actual blocks, no penalty) behaves exactly like the Original. This is verified against actual mainnet difficulties (100% exact match).
+
+### Difficulty display parity
+
+For both proposals the recorded/displayed `simDifficulty` is the **adjusted** mining target (the difficulty the block was actually mined against), so the difficulty charts compare like-for-like. The behavioural difference is visible in the *shape*: the Original's difficulty stays elevated after a run and decays slowly (sticky), while the New proposal's difficulty spikes per-block and snaps back to baseline immediately (transient).
 
 ### Effect on mining competition
 
-In the mining competition model, doubling an algo's target difficulty **halves its mining rate** (`rate = hashRate / targetDiff`). This reduces its probability of winning the next block, making it likely that another algorithm mines instead — naturally preventing consecutive blocks.
+In the mining competition model, an algo's effective mining target is raised by `m`, which **lowers its mining rate** (`rate = hashRate / targetDiff`) and thus its probability of winning the next block — making it likely that another algo/class mines instead, which is what breaks the consecutive run.
 
 ---
 
@@ -202,7 +225,9 @@ A **"Re-randomize Seeds"** button is provided in the settings bar. Clicking it g
 | `NUMBER_OF_RUNS`    | 30     | Independent simulation runs per scenario (for confidence intervals) |
 | `HASH_RATE_WINDOW`  | 20     | Rolling window size for hash rate estimation (blocks per algo)   |
 | `RATE_PRECISION`     | 10^9   | BigInt precision multiplier for rate computation                 |
-| `PENALTY_BASE`       | 2n     | Exponential backoff base for TIP-004 penalty (2^n)              |
+| `PENALTY_BASE`       | 2n     | Exponential backoff base for both penalties (2^n)              |
+| `PENALTY_CAP`        | 32n    | Cap on the New proposal modifier (`min(2^n, 32)`); Original is uncapped |
+| `PENALTY_CLASS_MAP`  | `{0,2:'randomx', 1:'sha3x', 3:'c29'}` | Penalty classes for the New proposal (RxM+RxT grouped) |
 | Default window range | 30–60  | LWMA window sizes simulated (step 5)                             |
 | Block height range   | 295000–296521 | Analysis range (after warm-up)                           |
 
@@ -245,16 +270,18 @@ All 4 algorithms show 100% exact match rate, confirming the JS implementation is
 Scenarios are generated dynamically by `generateScenarios(minWindow, maxWindow, step)`:
 
 1. **Actual (LWMA-90)** — baseline, uses actual historical data (no simulation)
-2. **LWMA-{w} + Penalty** — for each window size `w` in the range, with TIP-004 penalty
+2. **LWMA-{w} + Penalty (Original)** — for each window size `w`, with the Original penalty (per-algo, uncapped, sticky)
+3. **LWMA-{w} + Penalty (New)** — for each window size `w`, with the revised RFC #174 penalty (classes, capped 32×, transient)
 
-Default range: 30–60, step 5 → 7 penalty scenarios + 1 baseline = 8 total.
+Default range: 30–60, step 5 → 7 Original + 7 New penalty scenarios + 1 baseline = 15 total.
 
 The range is adjustable via the **Settings bar** at the top of the page. Click "Run Simulations" to regenerate with a new range. Click "Re-randomize Seeds" to re-run with fresh random seeds while keeping the same window range.
 
 ### What each scenario isolates
 
 - **Window size effect**: Compare Actual (90 blocks) vs LWMA-30/45/60+Penalty — smaller windows respond faster to hash rate changes
-- **Penalty effect**: The penalty prevents consecutive same-algo blocks, reducing variance and balancing algo distribution
+- **Penalty effect**: Both penalties prevent consecutive same-algo blocks, reducing variance and balancing algo distribution
+- **Original vs New**: On the **Algo / Lane Split** tab, the *Penalty Multiplier* chart overlays the Original (uncapped `2^n`) against the New (capped at 32×) multipliers, making the cap visible. The difficulty charts show the Original's slow post-run decay versus the New's immediate reset.
 
 ---
 

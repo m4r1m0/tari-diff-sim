@@ -260,16 +260,33 @@ const Charts = (function() {
             },
         });
 
-        // Penalty multiplier (from LWMA-90+Penalty median run)
-        const lwma90pRun = getMedianRun(simData, 'lwma90p');
-        if (lwma90pRun && lwma90pRun.length > 0) {
-            const penaltyPoints = lwma90pRun.filter(r => r.penaltyMultiplier > 1).map(r => ({ x: r.height, y: r.penaltyMultiplier }));
+        // Penalty multiplier: overlay Original (uncapped 2^n) vs New (capped at 32x),
+        // from the median run of the first scenario of each proposal. The modifier
+        // depends only on the consecutive run length, so any representative scenario
+        // of each shows the full picture (Original grows unbounded; New plateaus).
+        const penaltyDatasets = [];
+        for (const mode of ['original', 'new']) {
+            const s = simData.scenarios.find(sc => sc.penalty && sc.penaltyMode === mode);
+            if (!s) continue;
+            const run = getMedianRun(simData, s.id);
+            if (!run || run.length === 0) continue;
+            const points = run.filter(r => r.penaltyMultiplier > 1).map(r => ({ x: r.height, y: r.penaltyMultiplier }));
+            if (points.length === 0) continue;
+            penaltyDatasets.push({
+                label: mode === 'original' ? 'Original (uncapped)' : 'New (capped 32x)',
+                data: points,
+                backgroundColor: s.color + '80',
+                borderColor: s.color,
+                pointRadius: 3, pointHoverRadius: 6, showLine: false,
+            });
+        }
+        if (penaltyDatasets.length > 0) {
             get('chartPenaltyMultiplier', {
                 type: 'scatter',
-                data: { datasets: [{ label: 'Penalty Multiplier', data: penaltyPoints, backgroundColor: '#e74c3c80', borderColor: '#e74c3c', pointRadius: 3, pointHoverRadius: 6, showLine: false }] },
+                data: { datasets: penaltyDatasets },
                 options: {
                     responsive: true, maintainAspectRatio: false,
-                    plugins: { title: { display: true, text: 'TIP-004 Penalty Multiplier (LWMA-90+Penalty, median run)', color: '#eee', font: { size: 14 } }, legend: { labels: { color: '#ccc' } }, tooltip: { callbacks: { label: (ctx) => `Block ${ctx.parsed.x}: ${ctx.parsed.y}x target time` } } },
+                    plugins: { title: { display: true, text: 'Penalty Multiplier \u2014 Original (uncapped) vs New (capped 32x)', color: '#eee', font: { size: 14 } }, legend: { labels: { color: '#ccc' } }, tooltip: { callbacks: { label: (ctx) => `Block ${ctx.parsed.x}: ${ctx.parsed.y}x target time` } } },
                     scales: { x: { title: { display: true, text: 'Block Height', color: '#ccc' }, ticks: { color: '#999' }, grid: { color: '#333' } }, y: { title: { display: true, text: 'Target Time Multiplier', color: '#ccc' }, ticks: { color: '#999' }, grid: { color: '#333' } } },
                 },
             });
