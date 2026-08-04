@@ -11,7 +11,7 @@
     <div class="header">
         <h1>Tari Difficulty Algorithm Simulation</h1>
         <p class="subtitle">
-            Mining competition simulation: LWMA + TIP-004 penalty
+            Mining competition simulation: LWMA + TIP-004 penalty vs WTEMA
             &mdash; Block range 295000&ndash;296521 &mdash; 30 runs per scenario (95% CI)
         </p>
     </div>
@@ -137,13 +137,14 @@
     </div>
 
     <div class="footer">
-        <p>Data extracted via gRPC from local Tari node. LWMA verified against <code>lwma_diff.rs</code> (Tari Rust source). Mining competition: all 4 algos race in parallel, winner sampled from P(i) = (hashRate_i / targetDiff_i) / &Sigma;(hashRate_j / targetDiff_j). PRNG: xoshiro128**.</p>
+        <p>Data extracted via gRPC from local Tari node. LWMA verified against <code>lwma_diff.rs</code> (Tari Rust source). WTEMA is Zawy's exponential moving average difficulty (zawy12/difficulty-algorithms#76), run per algorithm with no penalty. Mining competition: all 4 algos race in parallel, winner sampled from P(i) = (hashRate_i / targetDiff_i) / &Sigma;(hashRate_j / targetDiff_j). PRNG: xoshiro128**.</p>
         <p>Algorithms: RandomXM (0), Sha3x (1), RandomXT (2), Cuckaroo (3). Target time: 480s/algo (2 min overall). Just download and open index.html &mdash; no server needed.</p>
     </div>
 
     <script src="js/config.js"></script>
     <script src="js/lwma.js"></script>
     <script src="js/lwma_sw.js"></script>
+    <script src="js/wtema.js"></script>
     <script src="js/prng.js"></script>
     <script src="js/statistics.js"></script>
     <script src="js/simulation.js"></script>
