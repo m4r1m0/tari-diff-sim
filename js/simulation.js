@@ -99,9 +99,11 @@ function precomputeBlockData(blocks) {
 }
 
 function countConsecutiveSameAlgo(blocks, currentIndex, algo) {
-    if (currentIndex === 0) return 0;
+    // Run length INCLUDING the current block: a lone block is a run of 1, the
+    // second of a streak is 2, etc. (consistent with the simulated scenario
+    // counters, so "Consecutive max" means the same thing on every tab).
     let count = 0;
-    for (let lookback = currentIndex - 1; lookback >= 0; lookback--) {
+    for (let lookback = currentIndex; lookback >= 0; lookback--) {
         if (blocks[lookback].pow_algo !== algo) break;
         count++;
     }
@@ -164,8 +166,13 @@ function runCompetition(blocks, scenario, seed) {
             simulatedDifficulty = algoRates.find(entry => entry.algo === winningAlgo).targetDifficulty;
         }
 
+        // consecutiveCount = run length of the last mined block (>= 1). A block
+        // extending the run is at position r = consecutiveCount + 1 and pays
+        // 2^(r-1) = 2^consecutiveCount: the second consecutive block doubles,
+        // the third quadruples, etc. (TIP: m = 2^(r-1)). Any other algorithm
+        // resets the run to length 1.
         if (winningAlgo === lastWinner) consecutiveCount++;
-        else consecutiveCount = 0;
+        else consecutiveCount = 1; // a fresh winner starts a run of length 1
         lastWinner = winningAlgo;
 
         simulatedTimestamp += simulatedSolveTime;
@@ -230,6 +237,9 @@ function computeAlgoRates(windows, hashRateHistory, scenario, lastWinner, consec
 }
 
 function applyPenaltyIfActive(window, algoConfig, scenario, algoId, lastWinner, consecutiveCount) {
+    // consecutiveCount is the run length ending at the previous block, so the
+    // block being mined is at position r = consecutiveCount + 1 and pays
+    // 2^(r-1) = 2^consecutiveCount. Fresh winners (consecutive = 0) pay base.
     const isConsecutiveWinner = (lastWinner === algoId);
     const consecutive = isConsecutiveWinner ? consecutiveCount : 0;
 
@@ -292,7 +302,7 @@ function buildResultObject(block, winningAlgo, simulatedDifficulty, simulatedSol
         actualMainChainBT: block._mainChainBlockTime,
         actualTimestamp: block.timestamp,
         consecutive: consecutiveCount,
-        penaltyMultiplier: (penaltyEnabled && consecutiveCount > 0) ? Math.pow(Number(PENALTY_BASE), consecutiveCount) : 1,
+        penaltyMultiplier: (penaltyEnabled && consecutiveCount > 0) ? Math.pow(Number(PENALTY_BASE), Math.max(consecutiveCount - 1, 0)) : 1,
         window: windowSize,
         penalty: penaltyEnabled,
     };
@@ -397,7 +407,8 @@ function runCompetitionSW(blocks, scenario, seed) {
             block, winningAlgo, simulatedDifficulty, simulatedSolveTime,
             Math.floor(simulatedTimestamp), consecutiveCount, scenario.window, scenario.penalty
         );
-        // Override with the capped modifier (buildResultObject would compute 2^n uncapped).
+        // Override with the capped modifier (buildResultObject's default is the
+        // uncapped 2^(consecutive-1)).
         result.penaltyMultiplier = winnerModifier > 1n ? Number(winnerModifier) : 1;
         results.push(result);
     }
@@ -510,8 +521,11 @@ function runCompetitionWtema(blocks, scenario, seed) {
             simulatedDifficulty = algoRates.find(entry => entry.algo === winningAlgo).targetDifficulty;
         }
 
+        // No penalty here; consecutiveCount is still run length (>= 1, including
+        // the current block) so the "Consecutive max" stat matches the other
+        // scenarios and the actual-data tab.
         if (winningAlgo === lastWinner) consecutiveCount++;
-        else consecutiveCount = 0;
+        else consecutiveCount = 1;
         lastWinner = winningAlgo;
 
         simulatedTimestamp += simulatedSolveTime;

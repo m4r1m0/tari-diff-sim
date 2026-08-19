@@ -240,15 +240,17 @@ const Charts = (function() {
             },
         });
 
-        // Consecutive runs (from actual baseline)
+        // Consecutive runs (from actual baseline). _consecutive is the run
+        // length INCLUDING the current block (a lone block is a run of 1),
+        // consistent with the simulated scenarios' counters.
         const runCounts = {};
         for (const b of data) {
-            if (b._consecutive > 0) runCounts[b._consecutive] = (runCounts[b._consecutive] || 0) + 1;
+            if (b._consecutive > 1) runCounts[b._consecutive] = (runCounts[b._consecutive] || 0) + 1;
         }
         const maxRun = Math.max(...Object.keys(runCounts).map(Number), 0);
         const labels = [], values = [];
-        for (let i = 1; i <= Math.min(maxRun, 10); i++) { labels.push(`${i} consecutive`); values.push(runCounts[i] || 0); }
-        if (maxRun > 10) { labels.push('10+'); values.push(Object.entries(runCounts).filter(([k]) => Number(k) > 10).reduce((s, [, v]) => s + v, 0)); }
+        for (let i = 2; i <= Math.min(maxRun, 10); i++) { labels.push(`Run of ${i}`); values.push(runCounts[i] || 0); }
+        if (maxRun > 10) { labels.push('Run of 10+'); values.push(Object.entries(runCounts).filter(([k]) => Number(k) > 10).reduce((s, [, v]) => s + v, 0)); }
 
         get('chartConsecutiveRuns', {
             type: 'bar',
