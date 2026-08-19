@@ -15,7 +15,7 @@
 
 const { NUMBER_OF_RUNS, RATE_PRECISION, PENALTY_BASE, LOG_EPSILON, FALLBACK_BLOCK_TIME,
         BASELINE_WINDOW, SCENARIO_PALETTE, BASELINE_COLOR, ALGO_IDS,
-        PENALTY_CAP, PENALTY_CLASS_MAP } = CONFIG;
+        PENALTY_CAP } = CONFIG;
 
 const { aggregateStatsWithCI, computeStats, findMedianRun } = Statistics;
 
@@ -39,9 +39,9 @@ function generateScenarios(minWindow, maxWindow, step) {
             baseline: false,
             color: SCENARIO_PALETTE[colorIndex % SCENARIO_PALETTE.length],
         });
-        // New proposal (RFC PR #174, 2026-07-28): penalty classes (RxM+RxT grouped),
+        // New proposal (TIP-RFC-MT-0004, 2026-08-19): per-algorithm penalty scope,
         // capped at 32x, transient (window stores unadjusted difficulty + normalized
-        // solve times, so the penalty resets the instant a different class mines).
+        // solve times, so the penalty resets the instant a different algorithm mines).
         scenarios.push({
             id: `lwma${windowSize}pnew`,
             label: `LWMA-${windowSize} + Penalty (New)`,
@@ -299,22 +299,25 @@ function buildResultObject(block, winningAlgo, simulatedDifficulty, simulatedSol
 }
 
 
-// --- "New" proposal (RFC PR #174, 2026-07-28) competition path ---
+// --- "New" proposal (TIP-RFC-MT-0004, 2026-08-19) competition path ---
 //
 // Isolated from the Original path above so the validated Original behaviour is
 // unchanged. Reuses the shared helpers (estimateMiningRate, sampleWinningAlgo,
 // sampleBlockTime, updateHashRateHistory, buildResultObject).
 //
 // Differences from the Original penalty:
-//   * Consecutive counting is per PENALTY CLASS, not per algorithm. RxM and RxT
-//     share the 'randomx' class, so RxM -> RxT continues the run and incurs the
-//     penalty (they are mined by the same hardware).
+//   * Penalty scope is per ALGORITHM, not per class. Each of the four algorithms
+//     (RxM, RxT, Sha3x, C29) is tracked independently, so RxM -> RxT resets the
+//     run and pays no penalty. This matches the accepted TIP: grouping RxM+RxT
+//     into a RandomX class was rejected (neutrality between algorithms; ~8.4%
+//     vs ~1.7% block-time inflation), and RandomX alternation is an explicitly
+//     conceded exemption under the TIP's single-algorithm threat model.
 //   * The modifier is capped: m = min(2^consecutive, PENALTY_CAP) with PENALTY_CAP=32.
 //   * The penalty is TRANSIENT: the LWMA (LwmaWindowSW) returns the UNADJUSTED
 //     target using base target_time and solve times normalized by m[i]. The mining
 //     target is unadjusted * m; the window stores the UNADJUSTED difficulty + m, so
 //     the penalty does not linger in avg_difficulty and resets immediately when a
-//     different class mines.
+//     different algorithm mines.
 //   * simDifficulty records the ADJUSTED mining target (parity with the Original,
 //     whose stored difficulty is also the penalized target), so the difficulty
 //     charts compare like-for-like.
@@ -340,8 +343,8 @@ function runCompetitionSW(blocks, scenario, seed) {
     const windows = initializeLwmaWindowsSW(scenario);
     const hashRateHistory = createEmptyHashRateHistory();
 
-    let lastClass = null;
-    let consecutiveClassCount = 0;
+    let lastWinner = -1;
+    let consecutiveCount = 0;
     let simulatedTimestamp = 0;
     const results = [];
 
@@ -357,7 +360,7 @@ function runCompetitionSW(blocks, scenario, seed) {
             continue;
         }
 
-        const algoRates = computeAlgoRatesSW(windows, hashRateHistory, lastClass, consecutiveClassCount);
+        const algoRates = computeAlgoRatesSW(windows, hashRateHistory, lastWinner, consecutiveCount);
         const totalRate = algoRates.reduce((sum, entry) => sum + entry.rate, 0);
 
         let winningAlgo, simulatedDifficulty, simulatedSolveTime, winnerModifier, winnerUnadjusted;
@@ -377,11 +380,13 @@ function runCompetitionSW(blocks, scenario, seed) {
             simulatedDifficulty = winnerEntry.miningTarget; // adjusted, for display parity
         }
 
-        // Update the class-based run length AFTER sampling this block.
-        const winnerClass = PENALTY_CLASS_MAP[winningAlgo];
-        if (winnerClass === lastClass) consecutiveClassCount++;
-        else consecutiveClassCount = 0;
-        lastClass = winnerClass;
+        // Update the per-algorithm run length AFTER sampling this block.
+        // consecutiveCount = run length ending at the last mined block (>= 1), so
+        // a block extending the run is at position r = consecutiveCount + 1 and pays
+        // m = 2^(r-1) = 2^consecutiveCount, per TIP m = min(2^(r-1), 32).
+        if (winningAlgo === lastWinner) consecutiveCount++;
+        else consecutiveCount = 1; // a fresh winner starts a run of length 1
+        lastWinner = winningAlgo;
 
         simulatedTimestamp += simulatedSolveTime;
         // Store the UNADJUSTED difficulty + the modifier in force for this block, so
@@ -390,7 +395,7 @@ function runCompetitionSW(blocks, scenario, seed) {
 
         const result = buildResultObject(
             block, winningAlgo, simulatedDifficulty, simulatedSolveTime,
-            Math.floor(simulatedTimestamp), consecutiveClassCount, scenario.window, scenario.penalty
+            Math.floor(simulatedTimestamp), consecutiveCount, scenario.window, scenario.penalty
         );
         // Override with the capped modifier (buildResultObject would compute 2^n uncapped).
         result.penaltyMultiplier = winnerModifier > 1n ? Number(winnerModifier) : 1;
@@ -411,15 +416,17 @@ function initializeLwmaWindowsSW(scenario) {
     return windows;
 }
 
-function computeAlgoRatesSW(windows, hashRateHistory, lastClass, consecutiveClassCount) {
+function computeAlgoRatesSW(windows, hashRateHistory, lastWinner, consecutiveCount) {
     const algoRates = [];
     for (const algoId of ALGO_IDS) {
         const window = windows[algoId];
 
-        // Penalty applies to every algo in the leading penalty class (so an RxT block
-        // following an RxM block continues the RandomX run and pays the penalty).
-        const algoClass = PENALTY_CLASS_MAP[algoId];
-        const consecutive = (algoClass === lastClass) ? consecutiveClassCount : 0;
+        // Penalty applies only to the algorithm that mined the previous block, so
+        // an RxT block following an RxM block pays no penalty (run reset).
+        // consecutiveCount = run length ending at the previous block; a block
+        // extending that run is at position r = consecutiveCount + 1 and pays
+        // m = 2^(r-1) = 2^consecutiveCount (TIP: m = min(2^(r-1), 32)).
+        const consecutive = (lastWinner === algoId) ? consecutiveCount : 0;
 
         let modifier = 1n;
         if (consecutive > 0) {

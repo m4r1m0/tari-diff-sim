@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * LWMA variant for the "New" penalty proposal (RFC PR #174, 2026-07-28).
+ * LWMA variant for the "New" penalty proposal (TIP-RFC-MT-0004, 2026-08-19).
  *
  * The validated LwmaWindow (Original proposal) bakes the penalty into target_time,
  * so calculate() returns an ADJUSTED difficulty that is then stored back into the
@@ -15,7 +15,7 @@
  *     block mined against an inflated target is not read as a hash-rate drop.
  *   - The caller applies m as a one-shot multiplier on the mining target only
  *     (miningTarget = unadjusted * m) and stores the UNADJUSTED difficulty in the
- *     window. The penalty therefore resets the instant a different penalty class
+ *     window. The penalty therefore resets the instant a different algorithm
  *     mines.
  *
  * Integer-exact normalization (RFC "Integer arithmetic"): every modifier is a
