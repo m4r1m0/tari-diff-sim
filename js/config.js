@@ -19,12 +19,12 @@ const FALLBACK_BLOCK_TIME = 120;
 const PERCENT_SCALING = 10000n;
 const PERCENT_FACTOR = 100;
 
-// --- "New" penalty proposal (RFC PR #174, 2026-07-28) ---
-// Penalty classes: RxM and RxT share RandomX hardware, so a run alternates RxM/RxT
-// without resetting the backoff. Capped at 32x for liveness (reached at the 6th
-// consecutive class block).
+// --- "New" penalty proposal (TIP-RFC-MT-0004, 2026-08-19) ---
+// Penalty scope is per algorithm: each of the four algorithms (RxM, RxT, Sha3x,
+// C29) is tracked independently, so an RxM block followed by an RxT block resets
+// the run. Capped at 32x for liveness (reached at the 6th consecutive block of
+// the same algorithm).
 const PENALTY_CAP = 32n;
-const PENALTY_CLASS_MAP = { 0: 'randomx', 2: 'randomx', 1: 'sha3x', 3: 'c29' };
 
 // --- Scenario generation ---
 
@@ -109,7 +109,7 @@ if (typeof window !== 'undefined') {
     window.CONFIG = {
         HASH_RATE_WINDOW, NUMBER_OF_RUNS, RATE_PRECISION, PENALTY_BASE,
         LOG_EPSILON, FALLBACK_BLOCK_TIME, PERCENT_SCALING, PERCENT_FACTOR,
-        PENALTY_CAP, PENALTY_CLASS_MAP,
+        PENALTY_CAP,
         DEFAULT_MIN_WINDOW, DEFAULT_MAX_WINDOW, DEFAULT_STEP, MIN_STEP, BASELINE_WINDOW,
         SCENARIO_PALETTE, BASELINE_COLOR,
         ANALYSIS_START_HEIGHT, ANALYSIS_END_HEIGHT, ZOOM_STEP, MIN_ZOOM_DELTA,

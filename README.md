@@ -3,7 +3,7 @@
 A client-side web application that simulates how Tari's difficulty adjustment algorithm would have performed under real network conditions. It compares **three designs side by side**:
 
 1. **LWMA + Penalty (Original)** — Tari's per-algorithm LWMA with the initial TIP-004 consecutive-block penalty (per-algo, uncapped, "sticky").
-2. **LWMA + Penalty (New)** — the revised proposal from [RFC PR #174](https://github.com/tari-project/rfcs/pull/174) (penalty classes, capped at 32×, transient).
+2. **LWMA + Penalty (New)** — the accepted [TIP-RFC-MT-0004](https://github.com/tari-project/rfcs/pull/174) (per-algorithm penalty scope, capped at 32×, transient).
 3. **WTEMA** — the research-recommended alternative: Zawy's exponential moving average difficulty ([#76](https://github.com/zawy12/difficulty-algorithms/issues/76)), run independently per algorithm **with no penalty**. This is the primary topic of the [Design Rationale](#wtema-scenario--design-rationale) section below.
 
 Uses actual historical block data extracted from a Tari mainnet node via gRPC.
@@ -128,15 +128,15 @@ Where `consecutive_count` = number of immediately preceding blocks mined by the 
 
 **Sticky interaction with the LWMA:** the penalty is applied by inflating `target_time`, so `LwmaWindow.calculate()` returns an *adjusted* difficulty. That adjusted difficulty is then stored back into the LWMA window. The inflated difficulty therefore lingers in `avg_difficulty` until it ages out — the penalty is "sticky" and decays slowly after a run breaks.
 
-### New Proposal — RFC PR #174 revised (transient)
+### New Proposal — TIP-RFC-MT-0004 (accepted, transient)
 
-**Source:** [RFC PR #174](https://github.com/tari-project/rfcs/pull/174) — `TIP-RFC-MT-0004_MinoTari_PoW_Difficulty_changes.md` (Last Modified 2026-07-28). Implemented in `js/lwma_sw.js` (`LwmaWindowSW`) and the `runCompetitionSW` path in `js/simulation.js`.
+**Source:** [RFC PR #174](https://github.com/tari-project/rfcs/pull/174) — `TIP-RFC-MT-0004_MinoTari_PoW_Difficulty_changes.md` (Last Modified 2026-08-19, Status: Accepted). Implemented in `js/lwma_sw.js` (`LwmaWindowSW`) and the `runCompetitionSW` path in `js/simulation.js`.
 
 Three changes versus the Original:
 
-1. **Penalty classes.** RxM and RxT are both RandomX variants mined by the same hardware, so they are grouped into one **penalty class**. A run alternating RxM↔RxT does *not* reset the backoff. Algorithms are grouped: `RandomX = {RxM, RxT}`, `Sha3x = {Sha3x}`, `C29 = {C29}`.
+1. **Per-algorithm penalty scope.** Each of the four algorithms (RxM, RxT, Sha3x, C29) is its own penalty scope. An RxM block followed by an RxT block **resets** the run and pays no penalty. An earlier draft grouped RxM and RxT into a single RandomX penalty class — both run on the same hardware, so a RandomX farm could otherwise alternate them for free — but the accepted TIP rejects that grouping: it is not neutral between algorithms (a combined class would hold roughly half of all blocks and pay ~1.47x expected penalty against ~1.15x for the others), and it dominates the block-time inflation (~8.4% vs ~1.7% with the algorithms separate). The cost of keeping them apart — RandomX capacity can alternate the two variants with no penalty at all, including on a private chain — is explicitly accepted under the TIP's single-algorithm threat model: the mechanism binds Sha3x and C29 in practice.
 
-2. **Capped at 32×.** `m = min(2^(r-1), 32)` where `r` is the run length within the class (including the block being mined). The cap is a liveness guarantee: if a single class is ever the only active miner, an uncapped modifier would stall the chain indefinitely. The cap bounds that failure to a 32× slowdown (≈4.3 h/block at an 8 min base) and the chain resumes as soon as any other class mines.
+2. **Capped at 32×.** `m = min(2^(r-1), 32)` where `r` is the run length within the algorithm (including the block being mined). The cap is a liveness guarantee: if a single algorithm is ever the only active miner, an uncapped modifier would stall the chain indefinitely. The cap bounds that failure to a 32× slowdown (≈4.3 h/block at an 8 min base) and the chain resumes as soon as any other algorithm mines.
 
    | Run length `r` | Modifier `m` |
    |----------------|--------------|
@@ -147,7 +147,7 @@ Three changes versus the Original:
    | 5              | 16           |
    | 6+             | 32 (capped)  |
 
-3. **Transient, not sticky.** The LWMA always uses the **base** `target_time` and returns the **unadjusted** target difficulty. Each sample in the window carries the per-block modifier `m[i]`, and solve times are **normalized by `m[i]`** before entering the weighted sum (`solve_time[i] / m[i]`, normalize-then-clamp to the base bounds, integer-exact via `M_MAX = 32`). The mining target is `unadjusted × m`; the window stores the **unadjusted** difficulty + `m`. Because the inflated difficulty never enters `avg_difficulty`, the penalty affects only the block it applies to and **resets the instant a different class mines** — no lingering inflation.
+3. **Transient, not sticky.** The LWMA always uses the **base** `target_time` and returns the **unadjusted** target difficulty. Each sample in the window carries the per-block modifier `m[i]`, and solve times are **normalized by `m[i]`** before entering the weighted sum (`solve_time[i] / m[i]`, normalize-then-clamp to the base bounds, integer-exact via `M_MAX = 32`). The mining target is `unadjusted × m`; the window stores the **unadjusted** difficulty + `m`. Because the inflated difficulty never enters `avg_difficulty`, the penalty affects only the block it applies to and **resets the instant a different algorithm mines** — no lingering inflation.
 
    **Implementation invariant:** with every modifier set to 1, `LwmaWindowSW.calculate()` is numerically identical to `LwmaWindow.calculate()`, so the warm-up phase (actual blocks, no penalty) behaves exactly like the Original. This is verified against actual mainnet difficulties (100% exact match).
 
@@ -157,7 +157,7 @@ For both proposals the recorded/displayed `simDifficulty` is the **adjusted** mi
 
 ### Effect on mining competition
 
-In the mining competition model, an algo's effective mining target is raised by `m`, which **lowers its mining rate** (`rate = hashRate / targetDiff`) and thus its probability of winning the next block — making it likely that another algo/class mines instead, which is what breaks the consecutive run.
+In the mining competition model, an algo's effective mining target is raised by `m`, which **lowers its mining rate** (`rate = hashRate / targetDiff`) and thus its probability of winning the next block — making it likely that another algorithm mines instead, which is what breaks the consecutive run.
 
 ---
 
@@ -228,8 +228,8 @@ These properties are quantified in [How to read the results](#how-to-read-the-re
 
 The penalty scenarios are kept purely as a comparison baseline. The research — including the [PR #174 review thread](https://github.com/tari-project/rfcs/pull/174), stringhandler's review, and the sequence of m4r1m0's simulations this sim is based on — documents four independent reasons the backoff is the wrong instrument:
 
-1. **It is evadable at linear cost.** A run is defined by penalty *class*, and RxM/RxT share RandomX hardware, so a miner alternating the two RandomX lanes pays nothing while a Sha3x miner pays in full. The threat model in the RFC explicitly concedes this.
-2. **It slows emission unless compensated.** `E[solve_time] = E[m]·T`; at balanced share `E[m]≈1.9`, inflating intervals ~87% unless base target times are cut (the RFC's own "Effect on mean block time"). ~25% of main-chain blocks are same-class runs **by chance** — honest miners absorb the tax, which is not a security property.
+1. **It is evadable for fractionally diversified miners.** Penalty scope is per algorithm, so a miner holding capacity in any *two* algorithms alternates them and pays nothing; because RxM and RxT run on the same hardware, RandomX capacity is exempt in full — a RandomX farm can alternate the two variants indefinitely with no penalty at all, including while building a private chain. The accepted TIP concedes this explicitly: its threat model names single-algorithm Sha3x/C29 concentration as the target, so the mechanism binds only miners stuck in one lane.
+2. **It still slows emission.** `E[solve_time] = E[m]·T`; the TIP's own corrected simulation puts the steady-state penalty at `E[m]≈1.16` with four algorithms live, inflating the mean block interval by ~1.7% (3.5% with three live). ~25% of main-chain blocks follow a same-algo block **by chance** — honest miners absorb the tax, which is not a security property, and the inflation lands on top of an already slow 3-min-realized block time.
 3. **The accounting cancels the scheduling.** "Accumulated difficulty per unit time equals hashrate, regardless of the target" — over any window beyond a few blocks, doubling the target makes each block worth twice as much *and* take twice as long, so the work-gain ratio the attacker needs is unchanged. This is the core reason a target-time penalty cannot raise the real cost of selfish mining.
 4. **It skews the estimator it depends on.** LWMA regresses solve times against target times over its window; a target jumping by powers of two injects noise the LWMA then reads back. The careful normalization/order-of-operations rules in the RFC are a patch for this interaction.
 
@@ -328,7 +328,7 @@ A **"Re-randomize Seeds"** button is provided in the settings bar. Clicking it g
 | `RATE_PRECISION`     | 10^9   | BigInt precision multiplier for rate computation                 |
 | `PENALTY_BASE`       | 2n     | Exponential backoff base for both penalties (2^n)              |
 | `PENALTY_CAP`        | 32n    | Cap on the New proposal modifier (`min(2^n, 32)`); Original is uncapped |
-| `PENALTY_CLASS_MAP`  | `{0,2:'randomx', 1:'sha3x', 3:'c29'}` | Penalty classes for the New proposal (RxM+RxT grouped) |
+| Penalty scope        | per algorithm | New proposal run tracking: RxM, RxT, Sha3x, C29 each independent; an RxM→RxT sequence resets |
 | Default window range | 30–60  | LWMA window sizes simulated (step 5)                             |
 | Block height range   | 295000–296521 | Analysis range (after warm-up)                           |
 
@@ -372,7 +372,7 @@ Scenarios are generated dynamically by `generateScenarios(minWindow, maxWindow, 
 
 1. **Actual (LWMA-90)** — baseline, uses actual historical data (no simulation)
 2. **LWMA-{w} + Penalty (Original)** — for each window size `w`, with the Original penalty (per-algo, uncapped, sticky)
-3. **LWMA-{w} + Penalty (New)** — for each window size `w`, with the revised RFC #174 penalty (classes, capped 32×, transient)
+3. **LWMA-{w} + Penalty (New)** — for each window size `w`, with the accepted TIP-004 penalty (per-algorithm scope, capped 32×, transient)
 4. **WTEMA-{w} (EMA)** — for each `w`, Zawy's WTEMA run per algorithm with **no penalty**; the swept value is the EMA smoothing constant `N` (see [WTEMA Scenario — Design Rationale](#wtema-scenario--design-rationale))
 
 Default range: 30–60, step 5 → 7 Original + 7 New + 7 WTEMA scenarios + 1 baseline = 22 total.
