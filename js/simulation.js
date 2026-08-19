@@ -381,8 +381,11 @@ function runCompetitionSW(blocks, scenario, seed) {
         }
 
         // Update the per-algorithm run length AFTER sampling this block.
+        // consecutiveCount = run length ending at the last mined block (>= 1), so
+        // a block extending the run is at position r = consecutiveCount + 1 and pays
+        // m = 2^(r-1) = 2^consecutiveCount, per TIP m = min(2^(r-1), 32).
         if (winningAlgo === lastWinner) consecutiveCount++;
-        else consecutiveCount = 0;
+        else consecutiveCount = 1; // a fresh winner starts a run of length 1
         lastWinner = winningAlgo;
 
         simulatedTimestamp += simulatedSolveTime;
@@ -420,6 +423,9 @@ function computeAlgoRatesSW(windows, hashRateHistory, lastWinner, consecutiveCou
 
         // Penalty applies only to the algorithm that mined the previous block, so
         // an RxT block following an RxM block pays no penalty (run reset).
+        // consecutiveCount = run length ending at the previous block; a block
+        // extending that run is at position r = consecutiveCount + 1 and pays
+        // m = 2^(r-1) = 2^consecutiveCount (TIP: m = min(2^(r-1), 32)).
         const consecutive = (lastWinner === algoId) ? consecutiveCount : 0;
 
         let modifier = 1n;
