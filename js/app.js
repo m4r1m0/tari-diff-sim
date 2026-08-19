@@ -74,9 +74,27 @@ const App = (function() {
     function initializeSelectedScenarios() {
         selectedScenarios = [simulationData.scenarios[0]];
         const simulatedScenarios = simulationData.scenarios.filter(scenario => !scenario.baseline);
-        if (simulatedScenarios.length > 0) selectedScenarios.push(simulatedScenarios[0]);
-        if (simulatedScenarios.length > 1) selectedScenarios.push(simulatedScenarios[Math.floor(simulatedScenarios.length / 2)]);
-        if (simulatedScenarios.length > 2) selectedScenarios.push(simulatedScenarios[simulatedScenarios.length - 1]);
+
+        // Meaningful three-way comparison out of the box: the baseline, SW's revised
+        // "New" penalty at the window the community discussed, and the
+        // research-recommended WTEMA at the default N. Falls back gracefully if a
+        // specific scenario is not in the generated set (e.g. a non-default sweep).
+        const findScenario = (predicate) => simulationData.scenarios.find(predicate);
+
+        const newPenalty = findScenario(sc => sc.penaltyMode === 'new' && sc.window === 45) ||
+                           findScenario(sc => sc.penaltyMode === 'new');
+        if (newPenalty) selectedScenarios.push(newPenalty);
+
+        const wtema = findScenario(sc => sc.penaltyMode === 'wtema' && sc.window === 45) ||
+                      findScenario(sc => sc.penaltyMode === 'wtema');
+        if (wtema) selectedScenarios.push(wtema);
+
+        // Backfill with the old auto-selection behaviour when no New/WTEMA scenario exists.
+        if (!newPenalty && simulatedScenarios.length > 0) selectedScenarios.push(simulatedScenarios[0]);
+        if (!wtema && simulatedScenarios.length > 1) selectedScenarios.push(simulatedScenarios[Math.floor(simulatedScenarios.length / 2)]);
+        if (simulatedScenarios.length > 2 && selectedScenarios.length - 1 < 3) {
+            selectedScenarios.push(simulatedScenarios[simulatedScenarios.length - 1]);
+        }
     }
 
     function initScenarioCheckboxes() {

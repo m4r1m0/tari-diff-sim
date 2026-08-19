@@ -51,6 +51,18 @@ function generateScenarios(minWindow, maxWindow, step) {
             baseline: false,
             color: SCENARIO_PALETTE[(colorIndex + 8) % SCENARIO_PALETTE.length],
         });
+        // WTEMA (Zawy's exponential moving average, #76): the research-recommended
+        // alternative. No penalty — response is embedded in the algorithm itself.
+        // The "window" slider sweeps the EMA smoothing constant N.
+        scenarios.push({
+            id: `wtema${windowSize}`,
+            label: `WTEMA-${windowSize} (EMA)`,
+            window: windowSize,
+            penalty: false,
+            penaltyMode: 'wtema',
+            baseline: false,
+            color: SCENARIO_PALETTE[(colorIndex + 12) % SCENARIO_PALETTE.length],
+        });
         colorIndex++;
     }
     return scenarios;
@@ -427,6 +439,114 @@ function computeAlgoRatesSW(windows, hashRateHistory, lastClass, consecutiveClas
 }
 
 
+// --- WTEMA (Zawy EMA, research-recommended) competition path ---
+//
+// Per-lane difficulty follows WtemaWindow.calculate(): a bounded, correcting
+// exponential update using the lane's own previous solve time (difficulty rises at
+// most ~1/N per fast block and falls at most ~5/N per slow block). There is no
+// penalty: the fast, mean-reverting response and the per-block movement bound are
+// built into the algorithm, so an extra scheduling penalty would double-count the
+// same mechanism (and would reintroduce the emission/efficiency flaws documented
+// in the README). Reuses the shared helpers (estimateMiningRate, sampleWinningAlgo,
+// sampleBlockTime, updateHashRateHistory, buildResultObject).
+
+function runSingleScenarioWtema(blocks, scenario, baseSeed = 0) {
+    const runs = [];
+    const allStats = [];
+    for (let runIndex = 0; runIndex < NUMBER_OF_RUNS; runIndex++) {
+        const run = runCompetitionWtema(blocks, scenario, runIndex + 1 + baseSeed);
+        runs.push(run);
+        allStats.push(computeStats(run));
+    }
+    return {
+        runs,
+        stats: aggregateStatsWithCI(allStats),
+        medianRunIndex: findMedianRun(allStats),
+        numRuns: NUMBER_OF_RUNS,
+    };
+}
+
+function runCompetitionWtema(blocks, scenario, seed) {
+    const rng = createRng(seed);
+    const windows = initializeWtemaWindows(scenario);
+    const hashRateHistory = createEmptyHashRateHistory();
+
+    let lastWinner = -1;
+    let consecutiveCount = 0;
+    let simulatedTimestamp = 0;
+    const results = [];
+
+    for (let index = 0; index < blocks.length; index++) {
+        const block = blocks[index];
+        const actualAlgo = block.pow_algo;
+
+        updateHashRateHistory(hashRateHistory, block, actualAlgo);
+
+        if (index < WARMUP_BLOCKS) {
+            windows[actualAlgo].add(block.timestamp, block.difficulty);
+            if (index === WARMUP_BLOCKS - 1) simulatedTimestamp = block.timestamp;
+            continue;
+        }
+
+        const algoRates = computeAlgoRatesWtema(windows, hashRateHistory);
+        const totalRate = algoRates.reduce((sum, entry) => sum + entry.rate, 0);
+
+        let winningAlgo, simulatedDifficulty, simulatedSolveTime;
+
+        if (totalRate <= 0) {
+            winningAlgo = actualAlgo;
+            simulatedDifficulty = BigInt(block.difficulty);
+            simulatedSolveTime = block._mainChainBlockTime || FALLBACK_BLOCK_TIME;
+        } else {
+            winningAlgo = sampleWinningAlgo(algoRates, totalRate, rng);
+            simulatedSolveTime = sampleBlockTime(totalRate, rng);
+            simulatedDifficulty = algoRates.find(entry => entry.algo === winningAlgo).targetDifficulty;
+        }
+
+        if (winningAlgo === lastWinner) consecutiveCount++;
+        else consecutiveCount = 0;
+        lastWinner = winningAlgo;
+
+        simulatedTimestamp += simulatedSolveTime;
+        windows[winningAlgo].add(Math.floor(simulatedTimestamp), simulatedDifficulty);
+
+        results.push(buildResultObject(
+            block, winningAlgo, simulatedDifficulty, simulatedSolveTime,
+            Math.floor(simulatedTimestamp), consecutiveCount, scenario.window, scenario.penalty
+        ));
+    }
+
+    return results;
+}
+
+function initializeWtemaWindows(scenario) {
+    const windows = {};
+    for (const algoId of ALGO_IDS) {
+        const algoConfig = ALGO_CONFIG[algoId];
+        const window = new WtemaWindow(scenario.window, algoConfig.targetTime, algoConfig.minDifficulty, MAX_DIFFICULTY);
+        window.setBaseTargetTime(algoConfig.targetTime);
+        windows[algoId] = window;
+    }
+    return windows;
+}
+
+function computeAlgoRatesWtema(windows, hashRateHistory) {
+    const algoRates = [];
+    for (const algoId of ALGO_IDS) {
+        const algoConfig = ALGO_CONFIG[algoId];
+        const window = windows[algoId];
+
+        let targetDifficulty = window.calculate();
+        if (targetDifficulty === null) targetDifficulty = algoConfig.minDifficulty;
+
+        const rate = estimateMiningRate(hashRateHistory[algoId], targetDifficulty);
+
+        algoRates.push({ algo: algoId, targetDifficulty, rate });
+    }
+    return algoRates;
+}
+
+
 // --- Run all scenarios ---
 
 function runAll(blocks, scenarios) {
@@ -467,6 +587,11 @@ function runSingleScenario(blocks, scenario, baseSeed = 0) {
         return runSingleScenarioSW(blocks, scenario, baseSeed);
     }
 
+    // WTEMA (Zawy EMA) uses its own competition path.
+    if (scenario.penaltyMode === 'wtema') {
+        return runSingleScenarioWtema(blocks, scenario, baseSeed);
+    }
+
     const runs = [];
     const allStats = [];
     for (let runIndex = 0; runIndex < NUMBER_OF_RUNS; runIndex++) {
@@ -487,5 +612,6 @@ if (typeof window !== 'undefined') {
     window.Simulation = {
         generateScenarios, runAll, runAllAsync,
         precomputeBlockData, getActualResults, runCompetition,
+        runCompetitionSW, runCompetitionWtema,
     };
 }

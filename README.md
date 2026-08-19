@@ -1,6 +1,12 @@
 # Tari Difficulty Algorithm Simulation
 
-A client-side web application that simulates how Tari's difficulty adjustment algorithm (LWMA) with the proposed TIP-004 consecutive block penalty would have performed under real network conditions. It compares **two penalty proposals side by side**: the **Original** penalty (per-algo, uncapped) and the **New** revised proposal from [RFC PR #174](https://github.com/tari-project/rfcs/pull/174) (penalty classes, capped at 32×, transient). Uses actual historical block data extracted from a Tari mainnet node via gRPC.
+A client-side web application that simulates how Tari's difficulty adjustment algorithm would have performed under real network conditions. It compares **three designs side by side**:
+
+1. **LWMA + Penalty (Original)** — Tari's per-algorithm LWMA with the initial TIP-004 consecutive-block penalty (per-algo, uncapped, "sticky").
+2. **LWMA + Penalty (New)** — the revised proposal from [RFC PR #174](https://github.com/tari-project/rfcs/pull/174) (penalty classes, capped at 32×, transient).
+3. **WTEMA** — the research-recommended alternative: Zawy's exponential moving average difficulty ([#76](https://github.com/zawy12/difficulty-algorithms/issues/76)), run independently per algorithm **with no penalty**. This is the primary topic of the [Design Rationale](#wtema-scenario--design-rationale) section below.
+
+Uses actual historical block data extracted from a Tari mainnet node via gRPC.
 
 **No server required.** Download the folder and open `index.html` in any browser. All computation runs client-side in JavaScript.
 
@@ -11,12 +17,14 @@ A client-side web application that simulates how Tari's difficulty adjustment al
 1. [Data Source](#data-source)
 2. [LWMA Algorithm](#lwma-algorithm)
 3. [Penalty Proposals (Original vs New)](#penalty-proposals)
-4. [Mining Competition Model](#mining-competition-model)
-5. [Simulation Parameters](#simulation-parameters)
-6. [Validation](#validation)
-7. [Scenarios](#scenarios)
-8. [Statistics & Confidence Intervals](#statistics--confidence-intervals)
-9. [Assumptions & Limitations](#assumptions--limitations)
+4. [WTEMA Scenario — Design Rationale](#wtema-scenario--design-rationale)
+5. [Mining Competition Model](#mining-competition-model)
+6. [Simulation Parameters](#simulation-parameters)
+7. [Validation](#validation)
+8. [Scenarios](#scenarios)
+9. [Statistics & Confidence Intervals](#statistics--confidence-intervals)
+10. [Assumptions & Limitations](#assumptions--limitations)
+11. [Further reading: the chain-work "credit cap"](#further-reading-the-chain-work-credit-cap)
 
 ---
 
@@ -153,6 +161,99 @@ In the mining competition model, an algo's effective mining target is raised by 
 
 ---
 
+## WTEMA Scenario — Design Rationale
+
+This section explains **why WTEMA replaces the whole "change the LWMA parameters + add a penalty" approach** as the recommended design, and why it is the right instrument for Tari's structure: 4 independent PoW lanes, an 8-minute per-lane target (120 s combined), large hashrate swings, and the geometric-mean (product, no root) chain-work comparison between forks.
+
+### What is implemented
+
+The WTEMA scenario runs Zawy's **WTEMA** per algorithm, exactly as recommended in [zawy12/difficulty-algorithms #76](https://github.com/zawy12/difficulty-algorithms/issues/76). Zawy's update is on the *target* axis (`target = prior × (1 + t/T/N − 1/N)`, higher = easier, so slow blocks relax the target). The simulator works on the *difficulty* axis (higher = harder, the quantity that gates block rate), so the form implemented here is its inverted, integer-exact equivalent:
+
+```
+t = ts[n] - ts[n-1]                        // lane's own previous solve time
+t = clamp(t, 1, 6*T)                       // same 6T bound as Tari's LWMA
+D_next = D_last * (N*T + T - t) / (N*T)    // fast block (t<T) -> harder, slow -> easier
+D_next = clamp(D_next, minDifficulty, maxDifficulty)
+```
+
+`T` = 480 s (per lane), `N` = the EMA smoothing constant (swept by the **Min/Max Window** slider: `WTEMA-30` … `WTEMA-60`). WTEMA is the linearization (`e^x ≈ 1 + x`) of relative ASERT, and every lane has its own independent WTEMA — per Zawy, keeping the per-algorithm difficulty calculation separate is "the best if not only correct way" for multi-PoW coins ([#69](https://github.com/zawy12/difficulty-algorithms/issues/69)).
+
+Unlike Tari's LWMA, WTEMA keeps no window: only the lane's last two samples `(timestamp, difficulty)` are needed. It uses the lane's **previous** solve time (a 1-block delay, exactly like today's Tari DAA, matching blackwolfsa's note that "we only feed in the actual mined blocks") — there is no real-time timestamp feeding, so it avoids the "live timestamp" complications and self-referential difficulty drift discussed in the forum.
+
+### The problem, decomposed: what a DAA actually can and cannot fix
+
+Before comparing algorithms it is worth being explicit about the floor that **no** difficulty algorithm can move. With a healthy 2-minute combined target, interleaved lane arrivals are a Poisson process with rate 1/(120 s). Even with a *perfect* DAA:
+
+- ~22% of blocks take > 3 min  (`e^(-3/2)`), median ≈ 83 s, mean 120 s, CV = 1
+- long gaps grow slower than linearly in block time: a 6-minute gap is a ~5% event even when the network is perfectly healthy
+
+This is why "block times are all over the place" is *mostly* a misread of exponential mining, not a difficulty bug — it is visible even on Bitcoin ([post 25](https://community.tari.com/t/update-taris-difficulty-algorithm/160/25)). The **fixable** component is DAA-induced: after a lane's hashrate surges or collapses, a slow DAA keeps the target wrong for hours, stretching the tail *beyond* the Poisson floor and letting burst miners reorg. The correct DAA metric is therefore the **excess tail** — P90/P99/max block time and difficulty overshoot — not the mean, which all sane algorithms keep near target (see [How to read the results](#how-to-read-the-results)).
+
+### Why EMA-family, not LWMA / DGW / MultiShield
+
+LWMA, DigiShield, DGW and MultiShield are all members of the moving-average family. Their shared defect is a **dead band**: when hashrate changes, the first several fast or slow blocks barely move the target, because the estimate is dominated by old samples that have already aged-in. Response time is the flip side of a smoothing window, and the LWMA/Digibyte-style "tempers" (weighting, clamping, median filters) only trade one lag profile for another. blackwolfsa's [post 15](https://community.tari.com/t/update-taris-difficulty-algorithm/160/15) is correct that swapping to DGW/MultiShield "won't change anything" — they are the same family with the same lag-vs-noise tradeoff, applied per-algo with a geometric-mean combination (which Tari already does).
+
+An exponential filter has a fundamentally different response profile: because the estimate is *multiplicative* and uses only the most recent samples, the difficulty reacts to the next fast or slow block instead of waiting for a window to refill. Its per-block movement is also *bounded* by the update factor itself, which moving averages do not have. Zawy's current and unambiguous verdict for per-chain difficulty is WTEMA, because "every good algorithm gives almost identical results" ([#76](https://github.com/zawy12/difficulty-algorithms/issues/76)) — so the question is not "which of dozens of DAAs is best" but "use the simplest correct one with the right N."
+
+### Why WTEMA and not full relative/absolute ASERT
+
+ASERT (the `e^x` form) is mathematically slightly cleaner but requires a b-spline approximation of `e^x` **in integer math** so that every architecture computes the identical value — otherwise validators can disagree and fork. WTEMA's `1 + x` linearization keeps essentially the same stability with far less consensus-sensitive code (a single `mul`/`div`), which is a real engineering advantage for a chain that must run on GPUs, ASICs and heterogeneous validators. Zawy's EMA-Z analysis ([#17](https://github.com/zawy12/difficulty-algorithms/issues/17)) documents this tradeoff in detail.
+
+### The two "optional" fixes that are actually unnecessary in WTEMA
+
+1. **Shrinking the LWMA window** (90 → 45). This only works *because* the penalty was bolted on top; the window and the penalty are coupled. WTEMA replaces the whole question with a single N parameter whose meaning is the same as an EMA mean-life, so there is no separate window to tune.
+2. **The consecutive-block penalty itself.** See [Why no penalty](#why-no-penalty).
+
+### Selecting N
+
+Under constant hashrate the difficulty std-dev of an EMA is approximately `1/√(2N)` ([#76](https://github.com/zawy12/difficulty-algorithms/issues/76)). Zawy's mapping for equal *response* to a moving average of window W is `N ≈ W / 2.3` ([#17](https://github.com/zawy12/difficulty-algorithms/issues/17)), but for *equal stability* an EMA with `N = 80` behaves like an SMA with `W = 144`. Because Tari's lanes have an 8-minute target, wall-clock response scales as `N × 8 min`, so a slightly larger N is affordable without the LWMA's sluggishness:
+
+| N (WTEMA) | Difficulty noise (const. hashrate) | Approx. lane response (× 8 min) |
+|-----------|------------------------------------|-------------------------------|
+| 30        | ~12.9%                             | ~4 h                           |
+| 45        | ~10.5%                             | ~6 h                           |
+| 60        | ~9.1%                              | ~8 h                           |
+
+**N = 45 is the default recommendation**: it matches the smoothness of today's LWMA-90 (`1/√90 ≈ 10.5%`) at roughly **half the wall-clock response**, while reacting on the very first changed block instead of waiting 12 hours of lane history. Sweep `30–60` (the slider's default) to see the noise/response tradeoff directly, and, per Zawy's guidance, err on the side of a larger N for a small coin: the reduction in tail variance from a larger N is usually worth the slower reaction to price/hashrate swings.
+
+### Security properties
+
+- **Bounded per-block movement.** The update factor ranges from `(1 + 1/N)` (at t = 1 s, a hashrate flood — difficulty can rise at most ~2.2% per block at `N = 45`) to `(1 − 5/N)` (at t = 6T, a hashrate collapse — difficulty falls at most ~11.1% per block). Because the correction is proportional and opposing, the estimate is mean-reverting rather than divergent: a block at half the target time raises difficulty by `+1/(2N)`, a block at double target time lowers it by `−1/N`, and so on. A hash flood therefore faces a target that climbs on the *next* block (limited to `+1/N` each), whereas an LWMA faces several blocks of a fresh flood at the *old* target before its window refills. This bounded, self-correcting response is the anti-burst property the penalty was trying to bolt on separately — and, critically, a wrong sign here diverges (the simulator reproduces the divergence for an inverted implementation), so the direction of correction is itself consensus-critical.
+- **Chain work is untouched.** The accumulated-per-lane difficulty product (geomean without the root) that selects forks is still fed by the difficulty the blocks were actually mined at; WTEMA changes only *how* that difficulty is chosen. A single-lane attacker must still outgrow the sum of the other three lanes' relative work to reorg, per the RFC's own algebra.
+- **No new header fields** — same as today; the next target is recomputed deterministically from the previous two blocks of the lane.
+
+These properties are quantified in [How to read the results](#how-to-read-the-results).
+
+### Why no penalty
+
+The penalty scenarios are kept purely as a comparison baseline. The research — including the [PR #174 review thread](https://github.com/tari-project/rfcs/pull/174), stringhandler's review, and the sequence of m4r1m0's simulations this sim is based on — documents four independent reasons the backoff is the wrong instrument:
+
+1. **It is evadable at linear cost.** A run is defined by penalty *class*, and RxM/RxT share RandomX hardware, so a miner alternating the two RandomX lanes pays nothing while a Sha3x miner pays in full. The threat model in the RFC explicitly concedes this.
+2. **It slows emission unless compensated.** `E[solve_time] = E[m]·T`; at balanced share `E[m]≈1.9`, inflating intervals ~87% unless base target times are cut (the RFC's own "Effect on mean block time"). ~25% of main-chain blocks are same-class runs **by chance** — honest miners absorb the tax, which is not a security property.
+3. **The accounting cancels the scheduling.** "Accumulated difficulty per unit time equals hashrate, regardless of the target" — over any window beyond a few blocks, doubling the target makes each block worth twice as much *and* take twice as long, so the work-gain ratio the attacker needs is unchanged. This is the core reason a target-time penalty cannot raise the real cost of selfish mining.
+4. **It skews the estimator it depends on.** LWMA regresses solve times against target times over its window; a target jumping by powers of two injects noise the LWMA then reads back. The careful normalization/order-of-operations rules in the RFC are a patch for this interaction.
+
+WTEMA needs no such mechanism because its bounded, immediate response already raises the cost of a burst at the *target* level — the layer where the attack actually operates. The whole "penalty vs no penalty" question is therefore moot once the DAA itself responds in one block.
+
+### How to read the results
+
+- **Mean block time**: all scenarios should sit near ~120–124 s. The mean is *not* the differentiator — it is pinned by the Poisson floor.
+- **The DAA metric**: look at **P90 / P99 / Max** block time, **CV**, and the difficulty trail in the *Difficulty Comparison* tab around the known hashrate swings in blocks 295000–296521. WTEMA should cut the *tail* — fewer 6–20+ minute gaps — because its target tracks a vanished or arrived miner within a few blocks instead of a 6–12 hour lane window.
+- **N sweep**: smaller N clips the tail harder but oscillates the difficulty more (`1/√(2N)`); larger N smooths but hugs the target more slowly. N = 45 is the default balance.
+- The **Algo / Lane Split** tab now compares three families; WTEMA scenarios simply have no penalty-multiplier scatter (they have no penalty to scatter).
+
+### Sources
+
+- [zawy12/difficulty-algorithms #76 — "Best Difficulty Algorithm, Timestamp Rules, Selfish Mining, Selecting N"](https://github.com/zawy12/difficulty-algorithms/issues/76)
+- [#69 — "Multishield's geometric mean to get chain work in Multi-POW coins"](https://github.com/zawy12/difficulty-algorithms/issues/69)
+- [#17 — EMA-Z / ASERT family, N mapping, integer-math notes](https://github.com/zawy12/difficulty-algorithms/issues/17)
+- [#14 — Selecting N based on coin experience and target solvetime](https://github.com/zawy12/difficulty-algorithms/issues/14)
+- [RFC PR #174 (TIP-RFC-MT-0004) and its review thread](https://github.com/tari-project/rfcs/pull/174)
+- [tari#7631 — the geometric-mean chain-work framing](https://github.com/tari-project/tari/issues/7631)
+- [Tari community thread — "Update Tari's Difficulty Algorithm"](https://community.tari.com/t/update-taris-difficulty-algorithm/160)
+
+---
+
 ## Mining Competition Model
 
 At each block slot, all 4 algos "race" in parallel. Each algo has:
@@ -272,8 +373,9 @@ Scenarios are generated dynamically by `generateScenarios(minWindow, maxWindow, 
 1. **Actual (LWMA-90)** — baseline, uses actual historical data (no simulation)
 2. **LWMA-{w} + Penalty (Original)** — for each window size `w`, with the Original penalty (per-algo, uncapped, sticky)
 3. **LWMA-{w} + Penalty (New)** — for each window size `w`, with the revised RFC #174 penalty (classes, capped 32×, transient)
+4. **WTEMA-{w} (EMA)** — for each `w`, Zawy's WTEMA run per algorithm with **no penalty**; the swept value is the EMA smoothing constant `N` (see [WTEMA Scenario — Design Rationale](#wtema-scenario--design-rationale))
 
-Default range: 30–60, step 5 → 7 Original + 7 New penalty scenarios + 1 baseline = 15 total.
+Default range: 30–60, step 5 → 7 Original + 7 New + 7 WTEMA scenarios + 1 baseline = 22 total.
 
 The range is adjustable via the **Settings bar** at the top of the page. Click "Run Simulations" to regenerate with a new range. Click "Re-randomize Seeds" to re-run with fresh random seeds while keeping the same window range.
 
@@ -282,6 +384,7 @@ The range is adjustable via the **Settings bar** at the top of the page. Click "
 - **Window size effect**: Compare Actual (90 blocks) vs LWMA-30/45/60+Penalty — smaller windows respond faster to hash rate changes
 - **Penalty effect**: Both penalties prevent consecutive same-algo blocks, reducing variance and balancing algo distribution
 - **Original vs New**: On the **Algo / Lane Split** tab, the *Penalty Multiplier* chart overlays the Original (uncapped `2^n`) against the New (capped at 32×) multipliers, making the cap visible. The difficulty charts show the Original's slow post-run decay versus the New's immediate reset.
+- **WTEMA vs the penalties**: the same-sweep comparison isolates the DAA *family* from the scheduling penalty. WTEMA has no multiplier scatter (nothing to scatter) and instead shows the bounded per-block difficulty movement and faster tail response during the period's hashrate swings.
 
 ---
 
@@ -323,12 +426,24 @@ Each statistic is aggregated across 30 runs:
 
 2. **Block time distribution** — block times are sampled from an exponential distribution (Poisson process), which is the correct model for PoW mining. The actual network also follows this distribution.
 
-3. **Algo sequence is simulated** — the winning algo at each step is determined by the mining competition, not replayed from actual data. This is the key improvement over the replay approach: the penalty actually prevents consecutive same-algo blocks.
+3. **Algo sequence is simulated** — the winning algo at each step is determined by the mining competition, not replayed from actual data. For the penalty scenarios, the penalty actually prevents consecutive same-algo blocks; the WTEMA scenarios rely on the algorithm's fast per-block response instead.
 
 4. **No miner behavior model** — the simulation does not model miners joining/leaving based on profitability. Hash rates are fixed inputs from actual data.
 
-5. **Warm-up dependency** — the first 600 blocks use actual data to seed the LWMA windows. Results are only meaningful for the analysis range (blocks 295,000+).
+5. **Warm-up dependency** — the first 600 blocks use actual data to seed the per-algo difficulty state (an LWMA window for the LWMA scenarios, or WTEMA's last-two-sample state). Results are only meaningful for the analysis range (blocks 295,000+).
 
 6. **Per-algo hash rate units** — hash rates for different algorithms are in different units (e.g., Sha3x hashes vs Cuckaroo cycles). The rate computation (`hashRate / targetDiff`) normalizes these to "blocks per second," which is consistent across algos.
 
 7. **Stochastic results** — each run produces different results due to random sampling. The 30-run aggregation with CIs provides statistical confidence, but individual runs may vary. Default seeds (1–30) ensure reproducibility; use the Re-randomize button for fresh runs.
+
+---
+
+## Further reading: the chain-work "credit cap"
+
+A separate, complementary idea surfaced during the research that is **documented here for completeness but not implemented in this simulator**, because a no-fork competition model cannot observe it.
+
+Tari selects the best tip between two competing forks by comparing the product of the four lanes' accumulated difficulties (the geometric mean without the n-th root). The comparison is effectively by *relative growth* — a tip wins when `x/Sha3 > y/C29 + z/RxT + w/RxM` for the latest blocks. [Issue #7631](https://github.com/tari-project/tari/issues/7631) identifies the residual risk this creates: if a single lane's difficulty is depressed (miners left), a big one-lane miner can burst several blocks each with a large *relative* difficulty, and the relative-growth comparison lets a short run outvote 20–100+ blocks mined by the other lanes.
+
+The TIP-004 backoff attacks that vector by inflating the lane's **target** (the scheduling layer) — with the efficiency flaws described elsewhere in this README. The alternative is to cap the block's contribution to its lane's **accumulated** difficulty used in the fork comparison, e.g. credit `min(achieved, k × current_target)` or normalize by the lane's recent average difficulty. This is stringhandler's "fix belongs in the accounting, not the scheduling" and aligns with Zawy's probability-corrected update forms in [#17](https://github.com/zawy12/difficulty-algorithms/issues/17). Mining requirements are unchanged; only the fork-picking bookkeeping is capped, so a lone lane can never pump its relative work faster than the DAA can react.
+
+It is **not implemented here** because the simulator models a single chain with a mining competition — there are no competing tips, so a credit cap has no observable effect in these numbers. It is also largely redundant once WTEMA is in place: WTEMA's bounded per-block movement (a burst of fast blocks raises the difficulty by at most `×(1 + 1/N)` per block, and the second block of the burst already mines at the raised target) stops a burst from getting its huge-relative-difficulty blocks cheaply in the first place. The credit cap is best understood as the defensive complement to keep in mind for the consensus layer (fork selection), not the difficulty adjustment layer that this simulator validates.
