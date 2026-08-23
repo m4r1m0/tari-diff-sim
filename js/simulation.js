@@ -15,7 +15,7 @@
 
 const { NUMBER_OF_RUNS, RATE_PRECISION, PENALTY_BASE, LOG_EPSILON, FALLBACK_BLOCK_TIME,
         BASELINE_WINDOW, SCENARIO_PALETTE, BASELINE_COLOR, ALGO_IDS,
-        PENALTY_CAP } = CONFIG;
+        PENALTY_CAP, BURN_IN_BLOCKS } = CONFIG;
 
 const { aggregateStatsWithCI, computeStats, findMedianRun } = Statistics;
 
@@ -311,26 +311,24 @@ function buildResultObject(block, winningAlgo, simulatedDifficulty, simulatedSol
 
 // --- "New" proposal (TIP-RFC-MT-0004, 2026-08-19) competition path ---
 //
-// Isolated from the Original path above so the validated Original behaviour is
-// unchanged. Reuses the shared helpers (estimateMiningRate, sampleWinningAlgo,
-// sampleBlockTime, updateHashRateHistory, buildResultObject).
+// Exact port of tari PR #7960 (branch sw_tip-004). Reuses the shared helpers
+// (estimateMiningRate, sampleWinningAlgo, sampleBlockTime, updateHashRateHistory,
+// buildResultObject).
 //
-// Differences from the Original penalty:
-//   * Penalty scope is per ALGORITHM, not per class. Each of the four algorithms
-//     (RxM, RxT, Sha3x, C29) is tracked independently, so RxM -> RxT resets the
-//     run and pays no penalty. This matches the accepted TIP: grouping RxM+RxT
-//     into a RandomX class was rejected (neutrality between algorithms; ~8.4%
-//     vs ~1.7% block-time inflation), and RandomX alternation is an explicitly
-//     conceded exemption under the TIP's single-algorithm threat model.
-//   * The modifier is capped: m = min(2^consecutive, PENALTY_CAP) with PENALTY_CAP=32.
-//   * The penalty is TRANSIENT: the LWMA (LwmaWindowSW) returns the UNADJUSTED
-//     target using base target_time and solve times normalized by m[i]. The mining
-//     target is unadjusted * m; the window stores the UNADJUSTED difficulty + m, so
-//     the penalty does not linger in avg_difficulty and resets immediately when a
-//     different algorithm mines.
-//   * simDifficulty records the ADJUSTED mining target (parity with the Original,
-//     whose stored difficulty is also the penalized target), so the difficulty
-//     charts compare like-for-like.
+// Fidelity to the Rust implementation:
+//   * PowBackoffTracker (js/lwma_sw.js) replaces the lastWinner/consecutiveCount
+//     counters: m = min(2^run_len, cap, 32), per-algorithm scope, run state is
+//     seeded by replaying the ACTUAL block algorithms during warm-up so the first
+//     simulated block pays the modifier the real chain would have charged it.
+//   * The mining target is adjusted Rust-style (TargetDifficultyWindow::calculate_pair):
+//     adjusted = clamp(saturating(base * m), min, max), with u64 saturation.
+//   * The window stores (target, adjustedTarget) pairs and the LWMA normalises
+//     solve times by the *effective* modifier adjustedTarget/target (LwmaWindowSW),
+//     which matches lwma_diff.rs::raw_difficulty exactly, including when a
+//     difficulty clamp binds.
+//   * The first BURN_IN_BLOCKS simulated blocks after warm-up are still simulated
+//     (windows/tracker update normally) but excluded from results/statistics, so
+//     charts only show the fully-accurate region past the warm-up boundary.
 
 function runSingleScenarioSW(blocks, scenario, baseSeed = 0) {
     const runs = [];
@@ -352,7 +350,12 @@ function runCompetitionSW(blocks, scenario, seed) {
     const rng = createRng(seed);
     const windows = initializeLwmaWindowsSW(scenario);
     const hashRateHistory = createEmptyHashRateHistory();
+    const tracker = new PowBackoffTracker();
+    // Blocks to simulate before results are recorded (warm-up + burn-in).
+    const analysisStart = WARMUP_BLOCKS + BURN_IN_BLOCKS;
 
+    // Display-only counters (run length ending at the current block); consensus
+    // semantics live in `tracker`.
     let lastWinner = -1;
     let consecutiveCount = 0;
     let simulatedTimestamp = 0;
@@ -365,52 +368,57 @@ function runCompetitionSW(blocks, scenario, seed) {
         updateHashRateHistory(hashRateHistory, block, actualAlgo);
 
         if (index < WARMUP_BLOCKS) {
-            windows[actualAlgo].add(block.timestamp, block.difficulty, 1n);
+            // Pre-fork replay: no penalty, adjusted == target. The tracker is
+            // advanced so its state at the warm-up boundary matches the actual
+            // chain (Rust derives it from the preceding headers).
+            windows[actualAlgo].add(block.timestamp, block.difficulty, block.difficulty);
+            tracker.push(actualAlgo);
             if (index === WARMUP_BLOCKS - 1) simulatedTimestamp = block.timestamp;
             continue;
         }
 
-        const algoRates = computeAlgoRatesSW(windows, hashRateHistory, lastWinner, consecutiveCount);
+        const algoRates = computeAlgoRatesSW(windows, hashRateHistory, tracker);
         const totalRate = algoRates.reduce((sum, entry) => sum + entry.rate, 0);
 
-        let winningAlgo, simulatedDifficulty, simulatedSolveTime, winnerModifier, winnerUnadjusted;
+        let winningAlgo, simulatedSolveTime, winnerEntry;
 
         if (totalRate <= 0) {
             winningAlgo = actualAlgo;
-            simulatedDifficulty = BigInt(block.difficulty);
             simulatedSolveTime = block._mainChainBlockTime || FALLBACK_BLOCK_TIME;
-            winnerModifier = 1n;
-            winnerUnadjusted = BigInt(block.difficulty);
+            // Degenerate path (no hash-rate data): no penalty applied, matching
+            // the pre-fork-style fallback of the other engines.
+            winnerEntry = { algo: actualAlgo, unadjusted: BigInt(block.difficulty), miningTarget: BigInt(block.difficulty), modifier: 1n };
         } else {
             winningAlgo = sampleWinningAlgo(algoRates, totalRate, rng);
             simulatedSolveTime = sampleBlockTime(totalRate, rng);
-            const winnerEntry = algoRates.find(entry => entry.algo === winningAlgo);
-            winnerModifier = winnerEntry.modifier;
-            winnerUnadjusted = winnerEntry.unadjusted;
-            simulatedDifficulty = winnerEntry.miningTarget; // adjusted, for display parity
+            winnerEntry = algoRates.find(entry => entry.algo === winningAlgo);
         }
 
-        // Update the per-algorithm run length AFTER sampling this block.
-        // consecutiveCount = run length ending at the last mined block (>= 1), so
-        // a block extending the run is at position r = consecutiveCount + 1 and pays
-        // m = 2^(r-1) = 2^consecutiveCount, per TIP m = min(2^(r-1), 32).
+        // Advance the tracker AFTER rates were computed (modifier_for is "what
+        // would this next block pay"), mirroring TargetDifficulties::add_back.
+        tracker.push(winningAlgo);
+
         if (winningAlgo === lastWinner) consecutiveCount++;
-        else consecutiveCount = 1; // a fresh winner starts a run of length 1
+        else consecutiveCount = 1; // display-only run length including this block
         lastWinner = winningAlgo;
 
         simulatedTimestamp += simulatedSolveTime;
-        // Store the UNADJUSTED difficulty + the modifier in force for this block, so
-        // the LWMA stays clean and the penalty stays transient.
-        windows[winningAlgo].add(Math.floor(simulatedTimestamp), winnerUnadjusted, winnerModifier);
-
-        const result = buildResultObject(
-            block, winningAlgo, simulatedDifficulty, simulatedSolveTime,
-            Math.floor(simulatedTimestamp), consecutiveCount, scenario.window, scenario.penalty
+        windows[winningAlgo].add(
+            Math.floor(simulatedTimestamp),
+            winnerEntry.unadjusted,
+            winnerEntry.miningTarget,
         );
-        // Override with the capped modifier (buildResultObject's default is the
-        // uncapped 2^(consecutive-1)).
-        result.penaltyMultiplier = winnerModifier > 1n ? Number(winnerModifier) : 1;
-        results.push(result);
+
+        if (index >= analysisStart) {
+            const result = buildResultObject(
+                block, winningAlgo, winnerEntry.miningTarget, simulatedSolveTime,
+                Math.floor(simulatedTimestamp), consecutiveCount, scenario.window, scenario.penalty
+            );
+            // Override with the capped modifier actually in force
+            // (buildResultObject's default assumes the uncapped Original formula).
+            result.penaltyMultiplier = Number(winnerEntry.modifier);
+            results.push(result);
+        }
     }
 
     return results;
@@ -427,28 +435,23 @@ function initializeLwmaWindowsSW(scenario) {
     return windows;
 }
 
-function computeAlgoRatesSW(windows, hashRateHistory, lastWinner, consecutiveCount) {
+function computeAlgoRatesSW(windows, hashRateHistory, tracker) {
     const algoRates = [];
     for (const algoId of ALGO_IDS) {
         const window = windows[algoId];
 
-        // Penalty applies only to the algorithm that mined the previous block, so
-        // an RxT block following an RxM block pays no penalty (run reset).
-        // consecutiveCount = run length ending at the previous block; a block
-        // extending that run is at position r = consecutiveCount + 1 and pays
-        // m = 2^(r-1) = 2^consecutiveCount (TIP: m = min(2^(r-1), 32)).
-        const consecutive = (lastWinner === algoId) ? consecutiveCount : 0;
-
-        let modifier = 1n;
-        if (consecutive > 0) {
-            modifier = PENALTY_BASE ** BigInt(consecutive);
-            if (modifier > PENALTY_CAP) modifier = PENALTY_CAP; // m = min(2^consecutive, 32)
-        }
+        // m = min(2^run_len, cap, M_MAX): what a block of this algorithm would
+        // pay if it were appended now. A fresh winner pays nothing.
+        const modifier = tracker.modifierFor(algoId, PENALTY_CAP);
 
         let unadjusted = window.calculate();
         if (unadjusted === null) unadjusted = ALGO_CONFIG[algoId].minDifficulty;
 
-        const miningTarget = unadjusted * modifier; // adjusted target the block must meet
+        // adjusted = clamp(saturating(base * m), min, max) — Rust `adjust()`.
+        // base is already within [min, max]; u64 saturation at MAX_U64.
+        let miningTarget = unadjusted * modifier;
+        if (miningTarget > MAX_U64) miningTarget = MAX_U64;
+
         const rate = estimateMiningRate(hashRateHistory[algoId], miningTarget);
 
         algoRates.push({ algo: algoId, unadjusted, miningTarget, modifier, rate });
