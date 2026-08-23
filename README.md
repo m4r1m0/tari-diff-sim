@@ -130,7 +130,7 @@ Where `consecutive_count` = number of immediately preceding blocks mined by the 
 
 ### New Proposal — TIP-RFC-MT-0004 (accepted, transient)
 
-**Source:** [RFC PR #174](https://github.com/tari-project/rfcs/pull/174) — `TIP-RFC-MT-0004_MinoTari_PoW_Difficulty_changes.md` (Last Modified 2026-08-19, Status: Accepted). Implemented in `js/lwma_sw.js` (`LwmaWindowSW`) and the `runCompetitionSW` path in `js/simulation.js`.
+**Source:** [RFC PR #174](https://github.com/tari-project/rfcs/pull/174) — `TIP-RFC-MT-0004_MinoTari_PoW_Difficulty_changes.md` (Last Modified 2026-08-19, Status: Accepted). **Implementation reference:** [tari PR #7960](https://github.com/tari-project/tari/pull/7960) (`feat: rfc tip 004`, branch `sw_tip-004`) — the Rust code that will actually run on the network. Implemented in `js/lwma_sw.js` (`LwmaWindowSW`, `PowBackoffTracker`) and the `runCompetitionSW` path in `js/simulation.js`.
 
 Three changes versus the Original:
 
@@ -147,9 +147,19 @@ Three changes versus the Original:
    | 5              | 16           |
    | 6+             | 32 (capped)  |
 
-3. **Transient, not sticky.** The LWMA always uses the **base** `target_time` and returns the **unadjusted** target difficulty. Each sample in the window carries the per-block modifier `m[i]`, and solve times are **normalized by `m[i]`** before entering the weighted sum (`solve_time[i] / m[i]`, normalize-then-clamp to the base bounds, integer-exact via `M_MAX = 32`). The mining target is `unadjusted × m`; the window stores the **unadjusted** difficulty + `m`. Because the inflated difficulty never enters `avg_difficulty`, the penalty affects only the block it applies to and **resets the instant a different algorithm mines** — no lingering inflation.
+3. **Transient, not sticky.** The LWMA always uses the **base** `target_time` and returns the **unadjusted** target difficulty. Each window sample stores the pair `(target, adjusted_target)` — the bar the block's PoW actually cleared — and solve times are normalized by the **effective** modifier `adjusted_target / target` before entering the weighted sum (normalize-then-clamp to the base bounds, integer-exact via `M_MAX = 32`). The mining target is `clamp(saturating(unadjusted × m), min, max)`. Because the inflated difficulty never enters `avg_difficulty`, the penalty affects only the block it applies to and **resets the instant a different algorithm mines** — no lingering inflation. Normalizing by the *effective* rather than the *nominal* modifier matters when a difficulty clamp binds: a block whose adjusted target was capped at the max difficulty was not really mined against the full nominal modifier, and de-normalizing by the nominal value would over-correct and drive a false difficulty spike (this is consensus-critical in the Rust implementation; see its `the_effective_modifier_is_used_when_a_clamp_binds` test).
 
-   **Implementation invariant:** with every modifier set to 1, `LwmaWindowSW.calculate()` is numerically identical to `LwmaWindow.calculate()`, so the warm-up phase (actual blocks, no penalty) behaves exactly like the Original. This is verified against actual mainnet difficulties (100% exact match).
+   **Implementation invariant:** with every modifier set to 1, `LwmaWindowSW.calculate()` is bit-identical to `LwmaWindow.calculate()`, so the warm-up phase (actual blocks, no penalty) behaves exactly like the Original. This is verified against actual mainnet difficulties (100% exact match).
+
+### Rust parity
+
+The New-proposal engine is an operation-for-operation port of tari PR #7960 and is pinned to it by tests (`node test/run_tests.js`, no dependencies):
+
+* All Rust unit-test vectors for `lwma_diff.rs::raw_difficulty` and `pow_backoff.rs` pass against the JS port.
+* A PRNG sweep proves pre-fork (m = 1) results are bit-identical to the legacy formula, mirroring the Rust test of the same purpose.
+* On real chain data the ported engine is byte-identical to the baseline engine with penalties off.
+
+Two deliberate fidelity details: the backoff run state is seeded from the actual chain during warm-up (Rust derives it from preceding headers), and the first `BURN_IN_BLOCKS = 10` simulated blocks after warm-up are computed but excluded from results/statistics so charts only show the fully accurate region past the boundary.
 
 ### Difficulty display parity
 

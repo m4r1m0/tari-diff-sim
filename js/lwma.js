@@ -25,6 +25,7 @@ class LwmaWindow {
         this.maxBlockTime = this.targetTime * LWMA_MAX_BLOCK_TIME_RATIO;
         this.minDifficulty = BigInt(minDifficulty);
         this.maxDifficulty = BigInt(maxDifficulty);
+        this.baseTargetTime = this.targetTime;
         this.samples = []; // [{timestamp: BigInt, difficulty: BigInt}], FIFO (index 0 = oldest)
     }
 
@@ -138,4 +139,16 @@ if (typeof window !== 'undefined') {
     window.WARMUP_BLOCKS = WARMUP_BLOCKS;
     window.TARGET_BLOCK_TIME = TARGET_BLOCK_TIME;
     window.MAX_U64 = MAX_U64;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        LwmaWindow,
+        ALGO_CONFIG,
+        ALGO_NAMES,
+        MAX_DIFFICULTY,
+        WARMUP_BLOCKS,
+        MAX_U64,
+        LWMA_MAX_BLOCK_TIME_RATIO,
+    };
 }

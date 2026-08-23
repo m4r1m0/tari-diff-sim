@@ -26,6 +26,12 @@ const PERCENT_FACTOR = 100;
 // the same algorithm).
 const PENALTY_CAP = 32n;
 
+// Number of simulated blocks after warm-up that are computed but excluded from
+// results/statistics, so charts only contain the fully-accurate region past the
+// warm-up boundary (backoff run state is seeded from actual data; the trim
+// removes any residual boundary artifact).
+const BURN_IN_BLOCKS = 10;
+
 // --- Scenario generation ---
 
 const DEFAULT_MIN_WINDOW = 30;
@@ -109,7 +115,7 @@ if (typeof window !== 'undefined') {
     window.CONFIG = {
         HASH_RATE_WINDOW, NUMBER_OF_RUNS, RATE_PRECISION, PENALTY_BASE,
         LOG_EPSILON, FALLBACK_BLOCK_TIME, PERCENT_SCALING, PERCENT_FACTOR,
-        PENALTY_CAP,
+        PENALTY_CAP, BURN_IN_BLOCKS,
         DEFAULT_MIN_WINDOW, DEFAULT_MAX_WINDOW, DEFAULT_STEP, MIN_STEP, BASELINE_WINDOW,
         SCENARIO_PALETTE, BASELINE_COLOR,
         ANALYSIS_START_HEIGHT, ANALYSIS_END_HEIGHT, ZOOM_STEP, MIN_ZOOM_DELTA,
